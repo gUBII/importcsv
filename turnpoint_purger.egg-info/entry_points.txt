@@ -1,0 +1,4 @@
+[console_scripts]
+turnpoint-budgeter = NDISBUDGETER:generate_budget_exports
+turnpoint-purger-cli = importcsv:main
+turnpoint-purger-gui = turnpoint_purger_ui:launch_ui

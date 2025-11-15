@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: turnpoint-purger
+Version: 1.0.0
+Summary: Automation toolkit for extracting TurnPoint client artefacts with a cinematic UI.
+Author: (Far)H4n_SOLO
+License: Proprietary
+Requires-Python: >=3.10
+Requires-Dist: python-dotenv<2,>=1.0
+Requires-Dist: selenium<5,>=4.14
+Requires-Dist: pandas<3,>=2.1
+Requires-Dist: openpyxl<4,>=3.1
+Requires-Dist: pillow<12.0,>=10.0
