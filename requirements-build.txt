@@ -1,0 +1,2 @@
+# Build-time dependencies for packaging
+pyinstaller>=6.4
