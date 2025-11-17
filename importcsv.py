@@ -44,9 +44,8 @@ PDCC_ROOT = Path(
 ).expanduser().resolve()
 PDCC_DOWNLOADS_DIR = PDCC_ROOT / "_downloads"
 LATEST_PURGEABLE_EXCEL = PDCC_ROOT / "latest_purgeable_clients.xlsx"
-DEFAULT_PURGEABLE_CLIENTS_URL = os.getenv(
-    "PURGEABLE_CLIENTS_URL", "https://tp1.com.au/client-list.asp?purgeable=yes"
-)
+PURGEABLE_CLIENTS_URL = os.getenv("PURGEABLE_CLIENTS_URL")
+PURGEABLE_CLIENTS_URL = os.getenv("PURGEABLE_CLIENTS_URL")
 PACKAGE_FALLBACK_NAMES = [
     "Admin",
     "HCP L1",
@@ -167,6 +166,28 @@ def load_pandas():
             "pandas is required for purgeable client exports. Install via `pip install pandas openpyxl`."
         ) from exc
     return pd
+
+
+def resolve_purgeable_clients_url(override=None):
+    if override:
+        return override
+    if PURGEABLE_CLIENTS_URL:
+        return PURGEABLE_CLIENTS_URL
+    base = BASE_URL.rstrip("/")
+    return f"{base}/client-list.asp?purgeable=yes"
+
+
+def _assert_valid_purgeable_page(driver, url):
+    try:
+        body = driver.find_element(By.TAG_NAME, "body")
+    except NoSuchElementException:
+        return
+    text = body.text.lower()
+    if "http error 404" in text or "error code" in text and "0x80070002" in text:
+        raise RuntimeError(
+            f"Purgeable client page returned 404 at {url}. "
+            "Set PURGEABLE_CLIENTS_URL (or use --purgeable-url) to point to the correct TurnPoint client list."
+        )
 
 
 def assign_universal_sequence(universal_id):
