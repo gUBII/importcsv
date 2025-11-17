@@ -1,0 +1,3 @@
+([('TurnpointPurger',
+   '/Users/moofasa/importcsv/dist/macos/TurnpointPurger',
+   'EXECUTABLE')],)
