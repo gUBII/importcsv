@@ -1,6 +1,6 @@
 # TurnpointPurger
 
-![TurnpointPurger Thumbnail](assets/turnpoint_thumbnail.svg)
+![TurnpointPurger UI](assets/turnpoint_ui_v201.png)
 
 **Version:** 2.0.1 (TurnpointPurger PDCC release)
 
@@ -73,6 +73,11 @@ turnpoint-purger-cli     # terminal workflow
 turnpoint-budgeter       # standalone budget export helper
 ```
 
+## GUI Highlights
+- Launches in full-screen (zoomed/maximized) mode and keeps a scrollable layout so the Directive Console, status panels, and log feed stay visible even on smaller displays.
+- Client Discovery controls (Find Purgeable Clients + Bundle Download actions) stay hidden until valid credentials are configured, preventing accidental bundle jobs with empty credentials.
+- Buttons reuse the existing logging/status system so you get toast + log updates as the purgeable dataset or bundles are generated.
+
 ## CLI Usage & Batch Purging
 - Running `python importcsv.py` still prompts for a single client ID, but now the CLI stops when a duplicate purge is detected. Pass `--force-duplicate` to override the guard, or `--no-duplicate-prompt` to fail fast without user input.
 - To automate multiple clients, provide a CSV manifest (`client_id,client_name,package`). A template lives at `client_manifest.example.csv`; copy it to `client_manifest.csv` or pass the path via `--manifest`.
@@ -98,7 +103,7 @@ turnpoint-budgeter       # standalone budget export helper
         NDIS_-_NDIA_Managed_clients.csv
       ...
   ```
-- Restrict the bundle to specific packages with `--bundle-package "HCP L1" --bundle-package "SaH Level 4"`; add `--update-bundle` (or use the **Update package bundle to latest** button) to re-download the dataset and replace every package export.
+- Restrict the bundle to specific packages with `--bundle-package "HCP L1" --bundle-package "SaH Level 4"`; add `--update-bundle` (or use the **Update package bundle to latest** button—visible once credentials are configured) to re-download the dataset and replace every package export.
 - Bundle runs reuse the latest purgeable workbook when present and only re-download when `--update-bundle` is supplied.
 - Set `PURGEABLE_CLIENTS_URL` (and optionally `PDCC_ROOT`) in `.env` if your TurnPoint tenant exposes the purgeable list at a different path or you prefer a custom export root.
 

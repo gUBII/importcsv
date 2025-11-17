@@ -56,8 +56,9 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 ### `turnpoint_purger_ui.py`
 - Subclasses `tk.Tk`; defines styles, frames, neon progress bars, GIF animation.
 - Uses `queue.Queue` to marshal logs from the core script (`set_log_sink`).
+- Wraps the entire dashboard inside a full-screen, scrollable canvas so all controls/logs remain accessible regardless of monitor size.
 - Widgets include a visual panel with a “Powered by Nexix365” badge and circular GIF (Pillow `ImageSequence` + cropping), directive console for credentials/controls, and a log panel with a scrolled text console and ASCII signature.
-- Client discovery controls add **Find Purgeable Clients**, **Bundle Download (All Packages)**, and **Update package bundle to latest** buttons; each spawns a background worker that calls the new `importcsv` helpers, logs results, and pops message boxes on completion/errors.
+- Client discovery controls add **Find Purgeable Clients**, **Bundle Download (All Packages)**, and **Update package bundle to latest** buttons; the entire section is hidden until credentials are configured so bundle jobs cannot run anonymously. Each button spawns a background worker that calls the new `importcsv` helpers, logs results, and pops message boxes on completion/errors.
 - Event handlers:
   - `_handle_engage` spawns a background thread to call `run_turnpoint_purge`.
   - `_execute_purge` wraps the call, enqueues success/failure messages, displays message boxes, and refreshes counters.
