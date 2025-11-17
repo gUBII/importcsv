@@ -43,9 +43,9 @@ class TurnpointPurgerUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("TurnpointPurger // Purging Control Surface")
-        self.geometry("1320x780")
+        self.geometry("1380x820")
         self.configure(bg="#03060f")
-        self.resizable(False, False)
+        self.minsize(1200, 800)
 
         self.log_queue = queue.Queue()
         self.status_var = tk.StringVar(
@@ -62,17 +62,23 @@ class TurnpointPurgerUI(tk.Tk):
         self.is_running = False
         self.last_dataset_path = None
         self.art_image = None
+        self.scroll_canvas = None
+        self.scroll_frame = None
+        self.discovery_frame = None
 
         configure_credentials(self.credential_username, self.credential_password)
 
         self._setup_styles()
-        self._build_layout()
+        self._build_scrollable_root()
+        self._build_layout(self.scroll_frame)
         self._refresh_sequence_stats()
         self._refresh_credential_display()
+        self._toggle_discovery_section(self._bundle_buttons_ready())
 
         set_log_sink(self._enqueue_log)
         self.after(120, self._drain_log_queue)
         self.after(400, self._prompt_operator_name)
+        self.after(200, self._maximize_window)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---------------------- UI Construction ---------------------- #
@@ -146,8 +152,57 @@ class TurnpointPurgerUI(tk.Tk):
             ],
         )
 
-    def _build_layout(self):
+    def _build_scrollable_root(self):
         container = tk.Frame(self, bg=self["bg"])
+        container.pack(fill="both", expand=True)
+        canvas = tk.Canvas(container, bg=self["bg"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        inner = tk.Frame(canvas, bg=self["bg"])
+        inner.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        self.scroll_canvas = canvas
+        self.scroll_frame = inner
+
+    def _on_mousewheel(self, event):
+        if self.scroll_canvas:
+            self.scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _maximize_window(self):
+        try:
+            self.state("zoomed")
+        except tk.TclError:
+            try:
+                self.attributes("-zoomed", True)
+            except tk.TclError:
+                self.attributes("-fullscreen", False)
+
+    def _bundle_buttons_ready(self):
+        return bool(self.credential_username and self.credential_password)
+
+    def _toggle_discovery_section(self, visible=None):
+        if visible is None:
+            visible = self._bundle_buttons_ready()
+        if not self.discovery_frame:
+            return
+        if visible:
+            if not self.discovery_frame.winfo_manager():
+                self.discovery_frame.pack(anchor="w", padx=20, pady=(12, 12), fill="x")
+        else:
+            self.discovery_frame.pack_forget()
+
+    def _build_layout(self, parent):
+        container = tk.Frame(parent, bg=self["bg"])
         container.pack(fill="both", expand=True, padx=24, pady=20)
         container.columnconfigure(0, weight=3)
         container.columnconfigure(1, weight=2)
@@ -303,38 +358,39 @@ class TurnpointPurgerUI(tk.Tk):
         )
         self.reset_button.pack(anchor="w", padx=20, pady=(0, 10), fill="x")
 
+        self.discovery_frame = tk.Frame(controls_panel, bg="#050b16")
         discovery_label = tk.Label(
-            controls_panel,
+            self.discovery_frame,
             text="Client Discovery",
             fg="#93b5ff",
             bg="#050b16",
             font=("Space Mono", 11, "bold"),
         )
-        discovery_label.pack(anchor="w", padx=20, pady=(12, 4))
+        discovery_label.pack(anchor="w", pady=(4, 6))
 
         self.find_button = ttk.Button(
-            controls_panel,
+            self.discovery_frame,
             text="Find Purgeable Clients",
             style="Cyber.TButton",
             command=self._handle_find_purgeable_clients,
         )
-        self.find_button.pack(anchor="w", padx=20, pady=(4, 6), fill="x")
+        self.find_button.pack(anchor="w", pady=(0, 6), fill="x")
 
         self.bundle_button = ttk.Button(
-            controls_panel,
+            self.discovery_frame,
             text="Bundle Download (All Packages)",
             style="Cyber.TButton",
             command=lambda: self._handle_bundle_download(update=False),
         )
-        self.bundle_button.pack(anchor="w", padx=20, pady=(0, 6), fill="x")
+        self.bundle_button.pack(anchor="w", pady=(0, 6), fill="x")
 
         self.update_bundle_button = ttk.Button(
-            controls_panel,
+            self.discovery_frame,
             text="Update package bundle to latest",
             style="Cyber.TButton",
             command=lambda: self._handle_bundle_download(update=True),
         )
-        self.update_bundle_button.pack(anchor="w", padx=20, pady=(0, 12), fill="x")
+        self.update_bundle_button.pack(anchor="w", pady=(0, 6), fill="x")
 
         notes = tk.Label(
             controls_panel,
@@ -653,6 +709,7 @@ class TurnpointPurgerUI(tk.Tk):
             self._append_log(
                 self._timestamp(f"Purging account updated for {self.credential_username}")
             )
+            self._toggle_discovery_section()
             dialog.destroy()
 
         action_row = tk.Frame(dialog, bg="#03060f")
@@ -787,6 +844,8 @@ class TurnpointPurgerUI(tk.Tk):
 
     def _on_close(self):
         set_log_sink(None)
+        if self.scroll_canvas:
+            self.scroll_canvas.unbind_all("<MouseWheel>")
         self.destroy()
 
     def _refresh_sequence_stats(self):
