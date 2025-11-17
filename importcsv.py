@@ -1,3 +1,4 @@
+import argparse
 import csv
 import os
 import re
@@ -43,6 +44,7 @@ DOCUMENTS_DIR = None
 FINAL_OUTPUT_DIR = None
 DOWNLOAD_TIMEOUT = 60  # seconds
 LOG_SINK = None
+DEFAULT_MANIFEST_PATH = Path(__file__).resolve().parent / "client_manifest.csv"
 
 
 def set_log_sink(callback):
@@ -353,6 +355,29 @@ def confirm_duplicate_cli(client_id, record, report_path):
     return answer in ("y", "yes")
 
 
+def guard_against_duplicate(client_id, *, allow_duplicate=False, prompt_on_duplicate=False):
+    """
+    Inspect purge history and either raise DuplicateClientError or allow execution.
+    When prompt_on_duplicate is True, the CLI will ask the operator whether to continue.
+    """
+    record = get_duplicate_metadata(client_id)
+    if not record:
+        return
+    report_path = create_duplicate_report(client_id, record)
+    human_time = format_timestamp(record.get("timestamp"))
+    log_message(
+        f"Client {client_id} already has a purge record ({human_time}). "
+        f"Details mirrored at {report_path}."
+    )
+    if allow_duplicate:
+        log_message("Duplicate override enabled. Continuing with purge.")
+        return
+    if prompt_on_duplicate and confirm_duplicate_cli(client_id, record, report_path):
+        log_message("Operator confirmed duplicate purge. Continuing.")
+        return
+    raise DuplicateClientError(client_id, record, report_path)
+
+
 def write_csv(page, records):
     """
     Write structured records (list of dicts) to CSV using the field names as headers.
@@ -657,11 +682,23 @@ def build_chrome_driver(headless=False):
     return webdriver.Chrome(options=chrome_options)
 
 
-def run_turnpoint_purge(client_id, client_name=None, headless=False):
+def run_turnpoint_purge(
+    client_id,
+    client_name=None,
+    headless=False,
+    *,
+    allow_duplicate=False,
+    prompt_on_duplicate=False,
+):
     """
     Execute the end-to-end extraction flow for a client ID.
     Returns the final output directory path.
     """
+    guard_against_duplicate(
+        client_id,
+        allow_duplicate=allow_duplicate,
+        prompt_on_duplicate=prompt_on_duplicate,
+    )
     universal_slot, purged_so_far = reserve_universal_sequence()
     assign_universal_sequence(universal_slot)
     log_message(
@@ -748,9 +785,220 @@ def ensure_credentials():
     return RUNTIME_USERNAME, RUNTIME_PASSWORD
 
 
+def _detect_default_manifest_path():
+    if DEFAULT_MANIFEST_PATH.exists():
+        return DEFAULT_MANIFEST_PATH
+    return None
+
+
+def parse_package_args(package_values):
+    packages = []
+    if not package_values:
+        return packages
+    for raw in package_values:
+        if not raw:
+            continue
+        parts = [chunk.strip() for chunk in raw.split(",")]
+        packages.extend([part for part in parts if part])
+    return packages
+
+
+def _normalize_package(value):
+    return (value or "").strip().lower()
+
+
+def load_client_manifest(manifest_path):
+    """
+    Load a CSV manifest of clients with columns: client_id, client_name, package.
+    Returns a list of dictionaries preserving file order.
+    """
+    path = Path(manifest_path).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"Client manifest not found at {path}")
+
+    entries = []
+    with path.open("r", newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        if not reader.fieldnames:
+            raise ValueError(f"Manifest {path} has no headers.")
+        for raw_row in reader:
+            row = { (key or "").strip().lower(): (value or "").strip() for key, value in raw_row.items() }
+            client_id = row.get("client_id") or row.get("turnpoint_id") or row.get("client")
+            if not client_id:
+                continue
+            entries.append(
+                {
+                    "client_id": client_id,
+                    "client_name": row.get("client_name") or row.get("name") or "",
+                    "package": row.get("package") or "",
+                }
+            )
+    if not entries:
+        raise ValueError(f"No clients discovered in manifest {path}.")
+    return entries
+
+
+def select_clients_by_packages(entries, packages):
+    """Return manifest entries filtered by package order."""
+    if not packages:
+        return entries
+    normalized_targets = [_normalize_package(pkg) for pkg in packages]
+    selection = []
+    seen_ids = set()
+    for target in normalized_targets:
+        matches = [
+            entry
+            for entry in entries
+            if _normalize_package(entry.get("package")) == target
+            and entry["client_id"] not in seen_ids
+        ]
+        if not matches:
+            log_message(f"No manifest entries matched package '{target}'.")
+        for match in matches:
+            selection.append(match)
+            seen_ids.add(match["client_id"])
+    return selection
+
+
+def build_batch_queue(manifest_path, *, packages=None, include_all=False):
+    entries = load_client_manifest(manifest_path)
+    if packages:
+        filtered = select_clients_by_packages(entries, packages)
+        if not filtered:
+            raise ValueError("No clients matched the requested package filters.")
+        return filtered
+    if include_all:
+        return entries
+    raise ValueError("A batch run requires either --package filters or --all-clients.")
+
+
+def run_client_batch(queue, *, headless=False, allow_duplicate=False):
+    """Sequentially run the purge for each manifest entry."""
+    completed = []
+    for entry in queue:
+        client_id = entry["client_id"]
+        client_name = entry.get("client_name") or None
+        package_label = entry.get("package") or "Unlabelled Package"
+        log_message(f"Starting purge for manifest client {client_id} [{package_label}].")
+        try:
+            output_dir = run_turnpoint_purge(
+                client_id,
+                client_name=client_name,
+                headless=headless,
+                allow_duplicate=allow_duplicate,
+                prompt_on_duplicate=False,
+            )
+            completed.append(
+                {
+                    "client_id": client_id,
+                    "status": "completed",
+                    "path": output_dir,
+                }
+            )
+        except DuplicateClientError as exc:
+            log_message(f"Skipping client {client_id}: {exc}")
+            completed.append(
+                {
+                    "client_id": client_id,
+                    "status": "duplicate",
+                    "path": None,
+                }
+            )
+        except Exception as exc:
+            log_message(f"Batch purge halted on client {client_id}: {exc}")
+            raise
+    return completed
+
+
+def parse_cli_args():
+    parser = argparse.ArgumentParser(description="TurnPoint client purger")
+    parser.add_argument(
+        "client_id",
+        nargs="?",
+        help="TurnPoint client ID to purge (prompts when omitted).",
+    )
+    parser.add_argument(
+        "--client-name",
+        help="Optional friendly name for the client when running a single purge.",
+    )
+    parser.add_argument(
+        "--manifest",
+        help="Path to a CSV manifest (client_id,client_name,package) for batch purges.",
+    )
+    parser.add_argument(
+        "--package",
+        action="append",
+        dest="packages",
+        help="Restrict a batch run to specific package names (repeat or comma-separate).",
+    )
+    parser.add_argument(
+        "--all-clients",
+        action="store_true",
+        help="Batch purge every client listed inside the manifest.",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run Chrome in headless mode.",
+    )
+    parser.add_argument(
+        "--force-duplicate",
+        action="store_true",
+        help="Override duplicate detection; rerun clients even if they were purged.",
+    )
+    parser.add_argument(
+        "--no-duplicate-prompt",
+        action="store_true",
+        help="Disable CLI confirmation prompts when duplicates are detected.",
+    )
+    return parser.parse_args()
+
+
 def main():
-    selected_client_id = prompt_client_id()
-    run_turnpoint_purge(selected_client_id)
+    args = parse_cli_args()
+    packages = parse_package_args(args.packages)
+    manifest_path = args.manifest
+
+    batch_mode = bool(packages or args.all_clients)
+    if batch_mode and not manifest_path:
+        detected = _detect_default_manifest_path()
+        if detected:
+            manifest_path = str(detected)
+        else:
+            raise SystemExit(
+                "Batch purging requires --manifest or a client_manifest.csv file next to importcsv.py."
+            )
+
+    if batch_mode:
+        queue = build_batch_queue(
+            manifest_path,
+            packages=packages,
+            include_all=args.all_clients,
+        )
+        total = len(queue)
+        log_message(f"Batch purge armed for {total} client(s).")
+        results = run_client_batch(
+            queue,
+            headless=args.headless,
+            allow_duplicate=args.force_duplicate,
+        )
+        completed = sum(1 for r in results if r["status"] == "completed")
+        duplicates = sum(1 for r in results if r["status"] == "duplicate")
+        log_message(
+            f"Batch purge finished: {completed} completed, {duplicates} skipped as duplicates."
+        )
+        return
+
+    client_id = args.client_id or prompt_client_id()
+    client_name = args.client_name
+    prompt_duplicates = (not args.no_duplicate_prompt) and not args.force_duplicate
+    run_turnpoint_purge(
+        client_id,
+        client_name=client_name,
+        headless=args.headless,
+        allow_duplicate=args.force_duplicate,
+        prompt_on_duplicate=prompt_duplicates,
+    )
 
 
 if __name__ == "__main__":
