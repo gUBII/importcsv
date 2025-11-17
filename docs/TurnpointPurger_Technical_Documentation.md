@@ -100,6 +100,7 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 - **Credential flow:** `.env` → `TP_USERNAME`/`TP_PASSWORD`; GUI updates via `configure_credentials`.
 - **Downloads:** Chrome configured with `download.default_directory`, files renamed/sanitized once complete.
 - **Data persistence:** `PurgedClients/<NexisID Client>` for working folders, `_duplicate_reports/`, and `~/.turnpoint_purger/purger_state.json`.
+- **Purgeable dataset config:** `PURGEABLE_CLIENTS_URL` (env var) overrides the default `https://tp1.com.au/client-list.asp?purgeable=yes`; CLI flag `--purgeable-url` provides per-run overrides without touching `.env`.
 
 ## Database / Storage
 - No database; relies on filesystem storage.

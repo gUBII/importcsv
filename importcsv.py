@@ -44,7 +44,7 @@ PDCC_ROOT = Path(
 ).expanduser().resolve()
 PDCC_DOWNLOADS_DIR = PDCC_ROOT / "_downloads"
 LATEST_PURGEABLE_EXCEL = PDCC_ROOT / "latest_purgeable_clients.xlsx"
-PURGEABLE_CLIENTS_URL = os.getenv("PURGEABLE_CLIENTS_URL")
+DEFAULT_PURGEABLE_CLIENTS_URL = f"{BASE_URL.rstrip('/')}/client-list.asp?purgeable=yes"
 PURGEABLE_CLIENTS_URL = os.getenv("PURGEABLE_CLIENTS_URL")
 PACKAGE_FALLBACK_NAMES = [
     "Admin",
@@ -173,8 +173,7 @@ def resolve_purgeable_clients_url(override=None):
         return override
     if PURGEABLE_CLIENTS_URL:
         return PURGEABLE_CLIENTS_URL
-    base = BASE_URL.rstrip("/")
-    return f"{base}/client-list.asp?purgeable=yes"
+    return DEFAULT_PURGEABLE_CLIENTS_URL
 
 
 def _assert_valid_purgeable_page(driver, url):
@@ -837,12 +836,16 @@ def _trigger_excel_download(driver):
     driver.execute_script("arguments[0].click();", button)
 
 
-def _download_purgeable_clients_excel(driver, limit=10000, download_dir=None):
+def _download_purgeable_clients_excel(
+    driver, limit=10000, download_dir=None, purgeable_url=None
+):
     ensure_pdcc_root()
     target_dir = download_dir or PDCC_DOWNLOADS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
-    driver.get(DEFAULT_PURGEABLE_CLIENTS_URL)
+    resolved_url = resolve_purgeable_clients_url(purgeable_url)
+    driver.get(resolved_url)
     WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+    _assert_valid_purgeable_page(driver, resolved_url)
     _set_record_limit(driver, limit)
     _apply_purgeable_filter(driver)
     previous = snapshot_files(target_dir)
@@ -892,13 +895,16 @@ def _discover_packages_from_dataframe(df):
     return packages
 
 
-def find_purgeable_clients(headless=False, limit=10000):
+def find_purgeable_clients(headless=False, limit=10000, purgeable_url=None):
     ensure_pdcc_root()
     driver = build_chrome_driver(headless=headless, download_dir=PDCC_DOWNLOADS_DIR)
     try:
         login(driver)
         excel_path = _download_purgeable_clients_excel(
-            driver, limit=limit, download_dir=PDCC_DOWNLOADS_DIR
+            driver,
+            limit=limit,
+            download_dir=PDCC_DOWNLOADS_DIR,
+            purgeable_url=purgeable_url,
         )
     finally:
         driver.quit()
@@ -949,7 +955,13 @@ def _export_package_dataframe(df, package_name, package_col, overwrite=False):
 
 
 def bundle_package_download(
-    packages=None, *, headless=False, refresh=False, overwrite=False, limit=10000
+    packages=None,
+    *,
+    headless=False,
+    refresh=False,
+    overwrite=False,
+    limit=10000,
+    purgeable_url=None,
 ):
     ensure_pdcc_root()
     dataframe = None
@@ -957,7 +969,9 @@ def bundle_package_download(
     packages_found = []
 
     if refresh or not LATEST_PURGEABLE_EXCEL.exists():
-        snapshot = find_purgeable_clients(headless=headless, limit=limit)
+        snapshot = find_purgeable_clients(
+            headless=headless, limit=limit, purgeable_url=purgeable_url
+        )
         dataframe = snapshot["dataframe"]
         packages_found = snapshot["packages"]
     else:
@@ -1323,6 +1337,10 @@ def parse_cli_args():
         dest="bundle_packages",
         help="Limit bundle exports to specific packages (repeat or comma-separate).",
     )
+    parser.add_argument(
+        "--purgeable-url",
+        help="Override the purgeable client list URL (defaults to BASE_URL + client-list.asp?purgeable=yes or PURGEABLE_CLIENTS_URL env).",
+    )
     return parser.parse_args()
 
 
@@ -1331,10 +1349,13 @@ def main():
     packages = parse_package_args(args.packages)
     bundle_packages = parse_package_args(args.bundle_packages)
     manifest_path = args.manifest
+    purgeable_url = args.purgeable_url
 
     if args.find_purgeable or args.bundle_download or args.update_bundle:
         if args.find_purgeable:
-            find_purgeable_clients(headless=args.headless)
+            find_purgeable_clients(
+                headless=args.headless, purgeable_url=purgeable_url
+            )
             if not (args.bundle_download or args.update_bundle):
                 return
         bundle_package_download(
@@ -1342,6 +1363,7 @@ def main():
             headless=args.headless,
             refresh=args.update_bundle,
             overwrite=args.update_bundle,
+            purgeable_url=purgeable_url,
         )
         return
 
