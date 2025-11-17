@@ -8,9 +8,9 @@ from pathlib import Path
 from datetime import datetime, timezone
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from dotenv import load_dotenv
 
 from purger_state import (
@@ -29,11 +29,52 @@ CONTACT_EMAIL = os.getenv("PURGER_CONTACT_EMAIL", "ops@nexix365.com")
 BASE_URL = "https://tp1.com.au/"
 CLIENT_ID = "56851"
 CLIENT_NAME = "KHAIR Adam"
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.1"
 ARCHIVE_ROOT = Path(
     os.getenv("PURGED_ARCHIVE_ROOT", str(Path.home() / "PurgedClients"))
 ).expanduser().resolve()
 DUPLICATE_REPORTS_DIR = ARCHIVE_ROOT / "_duplicate_reports"
+PDCC_ROOT = Path(
+    os.getenv(
+        "PDCC_ROOT",
+        str(
+            (ARCHIVE_ROOT.parent / "Purged Client" / "Package Divided Client Credential (PDCC)")
+        ),
+    )
+).expanduser().resolve()
+PDCC_DOWNLOADS_DIR = PDCC_ROOT / "_downloads"
+LATEST_PURGEABLE_EXCEL = PDCC_ROOT / "latest_purgeable_clients.xlsx"
+DEFAULT_PURGEABLE_CLIENTS_URL = os.getenv(
+    "PURGEABLE_CLIENTS_URL", "https://tp1.com.au/client-list.asp?purgeable=yes"
+)
+PACKAGE_FALLBACK_NAMES = [
+    "Admin",
+    "HCP L1",
+    "HCP L2",
+    "HCP L3",
+    "HCP L4",
+    "NDIS - NDIA Managed",
+    "NDIS - Plan Managed",
+    "NDIS - Self Managed",
+    "PACE-NDIA MANAGED",
+    "PACE-PLAN MANAGED",
+    "SaH Assistive Technology",
+    "SaH Case Management",
+    "SaH End of Life",
+    "SaH Home Modifications",
+    "SaH Level 1",
+    "SaH Level 2",
+    "SaH Level 3",
+    "SaH Level 4",
+    "SaH Level 5",
+    "SaH Level 6",
+    "SaH Level 7",
+    "SaH Level 8",
+    "SaH Transitioned HCP Level 1",
+    "SaH Transitioned HCP Level 2",
+    "SaH Transitioned HCP Level 3",
+    "SaH Transitioned HCP Level 4",
+]
 OPERATOR_NAME = None
 RUNTIME_USERNAME = TP_USERNAME
 RUNTIME_PASSWORD = TP_PASSWORD
@@ -78,6 +119,54 @@ class DuplicateClientError(Exception):
             f"{self.record.get('timestamp', 'unknown')}."
         )
         super().__init__(message)
+
+
+def ensure_pdcc_root():
+    """Ensure the PDCC directory tree exists (used by package exports)."""
+    PDCC_ROOT.mkdir(parents=True, exist_ok=True)
+    PDCC_DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    return PDCC_ROOT
+
+
+def sanitize_component(value, fallback="Package"):
+    text = (value or fallback).strip()
+    if not text:
+        text = fallback
+    safe = re.sub(r"[^\w\s-]", "_", text)
+    safe = re.sub(r"\s+", "_", safe).strip("_")
+    return safe or fallback
+
+
+def snapshot_files(folder: Path):
+    ensure_pdcc_root()
+    folder.mkdir(parents=True, exist_ok=True)
+    return {p.name for p in folder.iterdir() if p.is_file()}
+
+
+def wait_for_new_file_in(folder: Path, previous: set[str], timeout=DOWNLOAD_TIMEOUT):
+    folder.mkdir(parents=True, exist_ok=True)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ready = [
+            p
+            for p in folder.iterdir()
+            if p.is_file() and not p.name.endswith(".crdownload") and p.name not in previous
+        ]
+        if ready:
+            ready.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+            return ready[0]
+        time.sleep(0.5)
+    raise TimeoutException("Timed out waiting for download to finish.")
+
+
+def load_pandas():
+    try:
+        import pandas as pd  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "pandas is required for purgeable client exports. Install via `pip install pandas openpyxl`."
+        ) from exc
+    return pd
 
 
 def assign_universal_sequence(universal_id):
@@ -661,13 +750,254 @@ def extract_ndis_budget(driver):
     download_budget_excel(driver)
     return rows
 
-def build_chrome_driver(headless=False):
-    if OUTPUT_DIR is None:
+
+def _set_record_limit(driver, limit=10000):
+    selectors = [
+        (By.ID, "RecordLimit"),
+        (By.NAME, "recordlimit"),
+        (By.NAME, "RecordLimit"),
+        (By.XPATH, "//select[contains(@id,'record') or contains(@name,'record')]"),
+    ]
+    for by, locator in selectors:
+        try:
+            select_elem = driver.find_element(by, locator)
+            Select(select_elem).select_by_value(str(limit))
+            log_message(f"Record limit set to {limit}.")
+            return True
+        except Exception:
+            continue
+    log_message("Record limit selector not found; proceeding with existing limit.")
+    return False
+
+
+def _apply_purgeable_filter(driver):
+    toggled = False
+    checkbox_selectors = [
+        "//input[@type='checkbox' and (contains(translate(@id,'PURGE','purge'),'purge') or contains(translate(@name,'PURGE','purge'),'purge'))]",
+        "//label[contains(translate(text(),'PURGE','purge'),'purge')]/input[@type='checkbox']",
+    ]
+    for xpath in checkbox_selectors:
+        try:
+            checkbox = driver.find_element(By.XPATH, xpath)
+            if not checkbox.is_selected():
+                driver.execute_script("arguments[0].click();", checkbox)
+            toggled = True
+        except Exception:
+            continue
+    if not toggled:
+        log_message("Purgeable filter checkbox not found; continuing with existing filters.")
+
+    apply_selectors = [
+        "//input[@type='submit' and (contains(translate(@value,'SEARCH','search'),'search') or contains(translate(@value,'FILTER','filter'),'filter'))]",
+        "//button[contains(translate(text(),'SEARCH','search'),'search') or contains(translate(text(),'FILTER','filter'),'filter')]",
+    ]
+    for xpath in apply_selectors:
+        try:
+            button = driver.find_element(By.XPATH, xpath)
+            driver.execute_script("arguments[0].click();", button)
+            log_message("Purgeable filter applied.")
+            return
+        except Exception:
+            continue
+    log_message("Filter apply button not found; results may already be visible.")
+
+
+def _trigger_excel_download(driver):
+    button = WebDriverWait(driver, 15).until(
+        EC.element_to_be_clickable(
+            (
+                By.XPATH,
+                "//a[contains(translate(text(),'EXCEL','excel'),'excel') or contains(@title,'Excel') or contains(@onclick,'Excel')]"
+                " | //button[contains(translate(text(),'EXCEL','excel'),'excel')]",
+            )
+        )
+    )
+    driver.execute_script("arguments[0].scrollIntoView(true);", button)
+    driver.execute_script("arguments[0].click();", button)
+
+
+def _download_purgeable_clients_excel(driver, limit=10000, download_dir=None):
+    ensure_pdcc_root()
+    target_dir = download_dir or PDCC_DOWNLOADS_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    driver.get(DEFAULT_PURGEABLE_CLIENTS_URL)
+    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+    _set_record_limit(driver, limit)
+    _apply_purgeable_filter(driver)
+    previous = snapshot_files(target_dir)
+    _trigger_excel_download(driver)
+    downloaded = wait_for_new_file_in(target_dir, previous)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_name = f"purgeable_clients_{timestamp}.xlsx"
+    final_path = target_dir / safe_name
+    downloaded.rename(final_path)
+    latest = LATEST_PURGEABLE_EXCEL
+    if latest.exists():
+        latest.unlink()
+    shutil.copy2(final_path, latest)
+    log_message(f"Purgeable Excel downloaded -> {final_path.name}")
+    return final_path
+
+
+def _load_purgeable_dataframe(path: Path):
+    pd = load_pandas()
+    df = pd.read_excel(path)
+    return df
+
+
+def _discover_packages_from_dataframe(df):
+    if df.empty:
+        return []
+    package_col = None
+    for column in df.columns:
+        if "package" in column.lower():
+            package_col = column
+            break
+    if package_col is None:
+        return []
+    packages = (
+        df[package_col]
+        .dropna()
+        .astype(str)
+        .map(lambda x: x.strip())
+        .replace("", None)
+        .dropna()
+        .unique()
+        .tolist()
+    )
+    if not packages:
+        return PACKAGE_FALLBACK_NAMES
+    packages.sort()
+    return packages
+
+
+def find_purgeable_clients(headless=False, limit=10000):
+    ensure_pdcc_root()
+    driver = build_chrome_driver(headless=headless, download_dir=PDCC_DOWNLOADS_DIR)
+    try:
+        login(driver)
+        excel_path = _download_purgeable_clients_excel(
+            driver, limit=limit, download_dir=PDCC_DOWNLOADS_DIR
+        )
+    finally:
+        driver.quit()
+    latest = LATEST_PURGEABLE_EXCEL
+    df = _load_purgeable_dataframe(latest)
+    packages = _discover_packages_from_dataframe(df)
+    record_count = int(df.shape[0])
+    log_message(
+        f"Found {record_count} purgeable clients across {len(packages)} package(s). Excel snapshot saved at {latest}"
+    )
+    return {
+        "excel_path": latest,
+        "record_count": record_count,
+        "packages": packages,
+        "dataframe": df,
+    }
+
+
+def _export_package_dataframe(df, package_name, package_col, overwrite=False):
+    normalized_target = _normalize_package(package_name)
+    folder_name = re.sub(r"[\\/]+", "-", (package_name or "Package").strip()) or "Package"
+    package_dir = ensure_pdcc_root() / folder_name
+    package_dir.mkdir(parents=True, exist_ok=True)
+    safe_stem = sanitize_component(package_name or "Package")
+    excel_path = package_dir / f"{safe_stem}_clients.xlsx"
+    csv_path = package_dir / f"{safe_stem}_clients.csv"
+    if not overwrite and excel_path.exists() and csv_path.exists():
+        log_message(f"{package_name} bundle already exists; skipping. Use update to refresh.")
+        return {"package": package_name, "rows": None, "skipped": True}
+
+    mask = (
+        df[package_col]
+        .fillna("")
+        .astype(str)
+        .map(_normalize_package)
+        == normalized_target
+    )
+    subset = df.loc[mask]
+    subset.to_excel(excel_path, index=False)
+    subset.to_csv(csv_path, index=False)
+    if subset.empty:
+        log_message(f"Package '{package_name}' export created (empty placeholder).")
+    else:
+        log_message(
+            f"Package '{package_name}' export created with {len(subset)} client(s) -> {excel_path.name} / {csv_path.name}"
+        )
+    return {"package": package_name, "rows": int(len(subset)), "skipped": False}
+
+
+def bundle_package_download(
+    packages=None, *, headless=False, refresh=False, overwrite=False, limit=10000
+):
+    ensure_pdcc_root()
+    dataframe = None
+    package_col = None
+    packages_found = []
+
+    if refresh or not LATEST_PURGEABLE_EXCEL.exists():
+        snapshot = find_purgeable_clients(headless=headless, limit=limit)
+        dataframe = snapshot["dataframe"]
+        packages_found = snapshot["packages"]
+    else:
+        dataframe = _load_purgeable_dataframe(LATEST_PURGEABLE_EXCEL)
+        packages_found = _discover_packages_from_dataframe(dataframe)
+
+    if dataframe.empty:
+        raise RuntimeError("Purgeable client dataset is empty; cannot build bundles.")
+
+    for column in dataframe.columns:
+        if "package" in column.lower():
+            package_col = column
+            break
+    if package_col is None:
+        raise RuntimeError("Unable to locate a 'Package' column in the purgeable dataset.")
+
+    if not packages:
+        packages = packages_found or PACKAGE_FALLBACK_NAMES
+
+    unique_packages = []
+    seen = set()
+    for pkg in packages:
+        key = _normalize_package(pkg)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique_packages.append(pkg)
+    packages = unique_packages
+    if not packages:
+        log_message("No package names available for bundle export.")
+        return {
+            "excel_path": LATEST_PURGEABLE_EXCEL,
+            "packages": [],
+            "exports": [],
+        }
+
+    exports = []
+    for package in packages:
+        exports.append(
+            _export_package_dataframe(
+                dataframe,
+                package,
+                package_col,
+                overwrite=overwrite or refresh,
+            )
+        )
+
+    return {
+        "excel_path": LATEST_PURGEABLE_EXCEL,
+        "packages": packages,
+        "exports": exports,
+    }
+
+def build_chrome_driver(headless=False, download_dir=None):
+    target_dir = download_dir or OUTPUT_DIR
+    if target_dir is None:
         raise RuntimeError("Output directory not configured before creating driver.")
 
     chrome_options = webdriver.ChromeOptions()
     prefs = {
-        "download.default_directory": str(OUTPUT_DIR),
+        "download.default_directory": str(target_dir),
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
         "safebrowsing.enabled": True,
@@ -951,13 +1281,48 @@ def parse_cli_args():
         action="store_true",
         help="Disable CLI confirmation prompts when duplicates are detected.",
     )
+    parser.add_argument(
+        "--find-purgeable",
+        action="store_true",
+        help="Download the purgeable client list (record limit forced to 10,000).",
+    )
+    parser.add_argument(
+        "--bundle-download",
+        action="store_true",
+        help="Generate package-based client exports inside the PDCC directory.",
+    )
+    parser.add_argument(
+        "--update-bundle",
+        action="store_true",
+        help="Refresh the purgeable dataset and overwrite existing package bundles.",
+    )
+    parser.add_argument(
+        "--bundle-package",
+        action="append",
+        dest="bundle_packages",
+        help="Limit bundle exports to specific packages (repeat or comma-separate).",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_cli_args()
     packages = parse_package_args(args.packages)
+    bundle_packages = parse_package_args(args.bundle_packages)
     manifest_path = args.manifest
+
+    if args.find_purgeable or args.bundle_download or args.update_bundle:
+        if args.find_purgeable:
+            find_purgeable_clients(headless=args.headless)
+            if not (args.bundle_download or args.update_bundle):
+                return
+        bundle_package_download(
+            packages=bundle_packages or None,
+            headless=args.headless,
+            refresh=args.update_bundle,
+            overwrite=args.update_bundle,
+        )
+        return
 
     batch_mode = bool(packages or args.all_clients)
     if batch_mode and not manifest_path:

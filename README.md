@@ -2,7 +2,7 @@
 
 ![TurnpointPurger Thumbnail](assets/turnpoint_thumbnail.svg)
 
-**Version:** 1.0.0 (TurnpointPurger V1 release)
+**Version:** 2.0.1 (TurnpointPurger PDCC release)
 
 ```
  _____ _    ____   ___   _ _  _   _   ___      ____   ___  _     ___  
@@ -86,6 +86,21 @@ turnpoint-budgeter       # standalone budget export helper
   python importcsv.py --manifest nexis_clients.csv --all-clients
   ```
 - Batch runs respect the duplicate guard—clients with an existing purge history are skipped unless `--force-duplicate` is set.
+
+### Purgeable Client Discovery & PDCC Bundles
+- Use `python importcsv.py --find-purgeable` (or the new **Find Purgeable Clients** button in the UI) to log in, force the record limit to 10,000, apply the purgeable filter, and download the Excel dataset of every purgeable client. The workbook is stored at `Purged Client/Package Divided Client Credential (PDCC)/latest_purgeable_clients.xlsx`.
+- Generate package exports via `python importcsv.py --bundle-download` or the **Bundle Download** button; each package detected in the workbook gets its own folder containing both `.xlsx` and `.csv` lists:
+  ```
+  Purged Client/
+    Package Divided Client Credential (PDCC)/
+      NDIS - NDIA Managed/
+        NDIS_-_NDIA_Managed_clients.xlsx
+        NDIS_-_NDIA_Managed_clients.csv
+      ...
+  ```
+- Restrict the bundle to specific packages with `--bundle-package "HCP L1" --bundle-package "SaH Level 4"`; add `--update-bundle` (or use the **Update package bundle to latest** button) to re-download the dataset and replace every package export.
+- Bundle runs reuse the latest purgeable workbook when present and only re-download when `--update-bundle` is supplied.
+- Set `PURGEABLE_CLIENTS_URL` (and optionally `PDCC_ROOT`) in `.env` if your TurnPoint tenant exposes the purgeable list at a different path or you prefer a custom export root.
 
 ## Packaging Notes
 - All output folders live under `~/PurgedClients/` (override via `PURGED_ARCHIVE_ROOT`) with sequential NexisIDs to avoid collisions.

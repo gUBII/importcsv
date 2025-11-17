@@ -2,7 +2,7 @@
 
 ## Title Page
 - **Project:** TurnpointPurger Automation Suite  
-- **Version:** 1.0.0  
+- **Version:** 2.0.1  
 - **Scope:** Python + Selenium stack that automates TurnPoint (tp1.com.au) data extraction, budgeting exports, and archival.
 
 ## Executive Summary
@@ -30,6 +30,8 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 | **Operator state** | `prompt_operator_name`, `set_operator_name` annotate logs with operator code names. |
 | **Duplicate handling** | `get_client_last_purge`, `create_duplicate_report`, `confirm_duplicate_cli` consult JSON history and warn before rerunning the same client. |
 | **Duplicate gate** | `guard_against_duplicate` enforces the duplicate policy (raise, prompt, or override) before a purge reserves the next NexisID. |
+| **Purgeable discovery** | `find_purgeable_clients`, `_download_purgeable_clients_excel`, `_discover_packages_from_dataframe` force the TurnPoint search limit to 10k, apply purgeable filters, download the Excel dataset, and persist it to `PDCC/latest_purgeable_clients.xlsx`. |
+| **Package bundles** | `bundle_package_download` + `_export_package_dataframe` convert the purgeable workbook into per-package Excel/CSV pairs under `Purged Client/Package Divided Client Credential (PDCC)/<Package>/`. Supports bundle refresh (`refresh/update` flag) and package subsets. |
 | **Credentials** | `configure_credentials`, `ensure_credentials`, runtime globals allow the GUI to override `.env` values. |
 | **Archive management** | `assign_universal_sequence`, `ensure_archive_root`, `configure_client_context`, `update_final_client_name`, `finalize_output_directory`, `cleanup_old_csvs`, `reset_purge_data`, `calculate_directory_bytes` manage folder structure, sequential numbering, rename fallback (copytree on cross-device operations). |
 | **Selenium login** | `login(driver)` navigates to `BASE_URL`, waits for the login form, submits credentials, and waits for `/dashboard` via `WebDriverWait`. |
@@ -41,6 +43,7 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 | **Orchestration** | `run_turnpoint_purge(client_id, client_name=None, headless=False)` reserves a universal ID, configures directories, builds drivers, logs in, iterates across extractors, writes CSV outputs, renames archives once better names are discovered, handles downloads, computes archive size, records events, logs summaries, and returns the final path. Always quits the driver and finalizes the output directory. |
 | **CLI entry** | `main()` prompts for the client ID and launches the purge. |
 | **Batch CLI helpers** | `parse_cli_args`, `load_client_manifest`, `select_clients_by_packages`, `run_client_batch` power the new manifest-driven workflows (per-package batches or full 260+ client sweeps). |
+| **Purgeable CLI flags** | `--find-purgeable`, `--bundle-download`, `--update-bundle`, and `--bundle-package` expose the PDCC dataset download + bundle exports without invoking per-client purges. |
 
 **Selenium commands used**
 - `driver.get(url)`
@@ -54,6 +57,7 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 - Subclasses `tk.Tk`; defines styles, frames, neon progress bars, GIF animation.
 - Uses `queue.Queue` to marshal logs from the core script (`set_log_sink`).
 - Widgets include a visual panel with a “Powered by Nexix365” badge and circular GIF (Pillow `ImageSequence` + cropping), directive console for credentials/controls, and a log panel with a scrolled text console and ASCII signature.
+- Client discovery controls add **Find Purgeable Clients**, **Bundle Download (All Packages)**, and **Update package bundle to latest** buttons; each spawns a background worker that calls the new `importcsv` helpers, logs results, and pops message boxes on completion/errors.
 - Event handlers:
   - `_handle_engage` spawns a background thread to call `run_turnpoint_purge`.
   - `_execute_purge` wraps the call, enqueues success/failure messages, displays message boxes, and refreshes counters.
@@ -100,6 +104,7 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 - No database; relies on filesystem storage.
 - Working folder: `PurgedClients/<NexisID ClientID>/` containing CSVs, downloaded documents, and `NDIS_Budget_Exports/`.
 - Final folder renamed to include client names (`<NexisID CLIENT NAME (ID)>`); fallback copytree handles cross-device/permission issues.
+- Package exports: `Purged Client/Package Divided Client Credential (PDCC)/` houses the purgeable workbook (`latest_purgeable_clients.xlsx`) plus per-package folders with `<Package Name>_clients.xlsx` + `.csv`.
 - JSON state file structure:
   ```json
   {

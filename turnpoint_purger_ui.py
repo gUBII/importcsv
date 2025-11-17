@@ -13,6 +13,8 @@ from importcsv import (
     CONTACT_EMAIL,
     DuplicateClientError,
     format_timestamp,
+    find_purgeable_clients,
+    bundle_package_download,
     run_turnpoint_purge,
     set_log_sink,
     set_operator_name,
@@ -58,6 +60,7 @@ class TurnpointPurgerUI(tk.Tk):
         self.credential_password = RUNTIME_PASSWORD or ""
         self.run_thread = None
         self.is_running = False
+        self.last_dataset_path = None
         self.art_image = None
 
         configure_credentials(self.credential_username, self.credential_password)
@@ -299,6 +302,39 @@ class TurnpointPurgerUI(tk.Tk):
             command=self._handle_reset_purge,
         )
         self.reset_button.pack(anchor="w", padx=20, pady=(0, 10), fill="x")
+
+        discovery_label = tk.Label(
+            controls_panel,
+            text="Client Discovery",
+            fg="#93b5ff",
+            bg="#050b16",
+            font=("Space Mono", 11, "bold"),
+        )
+        discovery_label.pack(anchor="w", padx=20, pady=(12, 4))
+
+        self.find_button = ttk.Button(
+            controls_panel,
+            text="Find Purgeable Clients",
+            style="Cyber.TButton",
+            command=self._handle_find_purgeable_clients,
+        )
+        self.find_button.pack(anchor="w", padx=20, pady=(4, 6), fill="x")
+
+        self.bundle_button = ttk.Button(
+            controls_panel,
+            text="Bundle Download (All Packages)",
+            style="Cyber.TButton",
+            command=lambda: self._handle_bundle_download(update=False),
+        )
+        self.bundle_button.pack(anchor="w", padx=20, pady=(0, 6), fill="x")
+
+        self.update_bundle_button = ttk.Button(
+            controls_panel,
+            text="Update package bundle to latest",
+            style="Cyber.TButton",
+            command=lambda: self._handle_bundle_download(update=True),
+        )
+        self.update_bundle_button.pack(anchor="w", padx=20, pady=(0, 12), fill="x")
 
         notes = tk.Label(
             controls_panel,
@@ -632,6 +668,67 @@ class TurnpointPurgerUI(tk.Tk):
         ).pack(side="left", padx=8)
 
         email_entry.focus_set()
+
+    def _run_button_task(self, button, worker):
+        if button is None:
+            return
+        button.configure(state="disabled")
+
+        def runner():
+            try:
+                worker()
+            finally:
+                self.after(0, lambda: button.configure(state="normal"))
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _handle_find_purgeable_clients(self):
+        def task():
+            try:
+                result = find_purgeable_clients(headless=self.headless_var.get())
+                self.last_dataset_path = result.get("excel_path")
+                packages = result.get("packages", [])
+                count = result.get("record_count", 0)
+                message = (
+                    f"Purgeable discovery complete: {count} client(s) across {len(packages)} package(s).\n"
+                    f"Snapshot stored at:\n{self.last_dataset_path}"
+                )
+                self._enqueue_log(self._timestamp(message))
+                self.after(0, lambda: messagebox.showinfo("TurnpointPurger", message))
+            except Exception as exc:
+                error = f"Purgeable client discovery failed: {exc}"
+                self._enqueue_log(self._timestamp(error))
+                self.after(0, lambda: messagebox.showerror("TurnpointPurger", error))
+
+        self._run_button_task(self.find_button, task)
+
+    def _handle_bundle_download(self, update=False):
+        button = self.update_bundle_button if update else self.bundle_button
+
+        def task():
+            try:
+                result = bundle_package_download(
+                    headless=self.headless_var.get(),
+                    refresh=update,
+                    overwrite=update,
+                )
+                self.last_dataset_path = result.get("excel_path")
+                exports = result.get("exports", [])
+                completed = [e for e in exports if e and not e.get("skipped")]
+                skipped = [e for e in exports if e and e.get("skipped")]
+                summary = (
+                    f"Package bundle {'updated' if update else 'created'}: "
+                    f"{len(completed)} package(s) exported, {len(skipped)} skipped. "
+                    f"Source workbook: {self.last_dataset_path}"
+                )
+                self._enqueue_log(self._timestamp(summary))
+                self.after(0, lambda: messagebox.showinfo("TurnpointPurger", summary))
+            except Exception as exc:
+                error = f"Bundle download failed: {exc}"
+                self._enqueue_log(self._timestamp(error))
+                self.after(0, lambda: messagebox.showerror("TurnpointPurger", error))
+
+        self._run_button_task(button, task)
 
     def _execute_purge(self, client_id):
         try:
