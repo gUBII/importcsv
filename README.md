@@ -105,7 +105,7 @@ turnpoint-budgeter       # standalone budget export helper
   ```
 - Restrict the bundle to specific packages with `--bundle-package "HCP L1" --bundle-package "SaH Level 4"`; add `--update-bundle` (or use the **Update package bundle to latest** button—visible once credentials are configured) to re-download the dataset and replace every package export.
 - Bundle runs reuse the latest purgeable workbook when present and only re-download when `--update-bundle` is supplied.
-- Set `PURGEABLE_CLIENTS_URL` (and optionally `PDCC_ROOT`) in `.env` if your TurnPoint tenant exposes the purgeable list at a different path or you prefer a custom export root.
+- Set `PURGEABLE_CLIENTS_URL` (and optionally `PDCC_ROOT`) in `.env` if your TurnPoint tenant exposes the purgeable list at a different path or you prefer a custom export root. For one-off runs, pass `--purgeable-url https://tp1.com.au/custom-client-list.asp` to override without editing the environment.
 
 ## Packaging Notes
 - All output folders live under `~/PurgedClients/` (override via `PURGED_ARCHIVE_ROOT`) with sequential NexisIDs to avoid collisions.
