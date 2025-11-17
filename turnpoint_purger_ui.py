@@ -11,6 +11,8 @@ from importcsv import (
     CLIENT_ID as DEFAULT_CLIENT_ID,
     APP_VERSION,
     CONTACT_EMAIL,
+    DuplicateClientError,
+    format_timestamp,
     run_turnpoint_purge,
     set_log_sink,
     set_operator_name,
@@ -638,6 +640,15 @@ class TurnpointPurgerUI(tk.Tk):
                 self._timestamp(f"Purging sweep finished. Output archived @ {output_dir}")
             )
             self._notify_completion(success=True, output=str(output_dir))
+        except DuplicateClientError as exc:
+            last_purge = format_timestamp((exc.record or {}).get("timestamp"))
+            message = (
+                f"Client {exc.client_id} already has a purge from {last_purge}."
+            )
+            if exc.report_path:
+                message += f" Duplicate notice: {exc.report_path}"
+            self._enqueue_log(self._timestamp(message))
+            self._notify_completion(success=False, error=message)
         except Exception as exc:
             self._enqueue_log(self._timestamp(f"Purging failure: {exc}"))
             self._notify_completion(success=False, error=str(exc))

@@ -73,6 +73,20 @@ turnpoint-purger-cli     # terminal workflow
 turnpoint-budgeter       # standalone budget export helper
 ```
 
+## CLI Usage & Batch Purging
+- Running `python importcsv.py` still prompts for a single client ID, but now the CLI stops when a duplicate purge is detected. Pass `--force-duplicate` to override the guard, or `--no-duplicate-prompt` to fail fast without user input.
+- To automate multiple clients, provide a CSV manifest (`client_id,client_name,package`). A template lives at `client_manifest.example.csv`; copy it to `client_manifest.csv` or pass the path via `--manifest`.
+- Process clients serially per package:
+  ```bash
+  python importcsv.py --manifest nexis_clients.csv --package "Core Supports" --package "SIL"
+  ```
+  Packages are consumed in the order provided; each matching client is purged sequentially.
+- Purge everyone listed in the manifest (useful for the full 260+ client sweep):
+  ```bash
+  python importcsv.py --manifest nexis_clients.csv --all-clients
+  ```
+- Batch runs respect the duplicate guard—clients with an existing purge history are skipped unless `--force-duplicate` is set.
+
 ## Packaging Notes
 - All output folders live under `~/PurgedClients/` (override via `PURGED_ARCHIVE_ROOT`) with sequential NexisIDs to avoid collisions.
 - Duplicate client IDs are detected; the tool emits a `_duplicate_reports/<client>.csv` ledger showing the last purge timestamp before allowing a rerun.
