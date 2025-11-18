@@ -751,6 +751,9 @@ class TurnpointPurgerUI(tk.Tk):
             return
         try:
             reset_purge_data()
+            if self.manifest_path and Path(self.manifest_path).exists():
+                Path(self.manifest_path).unlink(missing_ok=True)
+            self._load_manifest_table()
             notice = self._timestamp("Purge archives wiped. Counters restored to zero.")
             self._append_log(notice)
             self.status_var.set("Purge archive reset. Awaiting new directives.")
@@ -866,6 +869,109 @@ class TurnpointPurgerUI(tk.Tk):
 
         threading.Thread(target=runner, daemon=True).start()
 
+    def _get_manifest_packages(self):
+        manifest = Path(self.manifest_path)
+        packages = []
+        if manifest.exists():
+            try:
+                with manifest.open("r", newline="", encoding="utf-8") as fh:
+                    reader = csv.DictReader(fh)
+                    seen = set()
+                    for row in reader:
+                        pkg = (row.get("Package") or row.get("package") or "").strip()
+                        if pkg and pkg not in seen:
+                            seen.add(pkg)
+                            packages.append(pkg)
+            except Exception:
+                packages = []
+        if not packages:
+            from importcsv import PACKAGE_FALLBACK_NAMES
+
+            packages = PACKAGE_FALLBACK_NAMES
+        return packages
+
+    def _start_bundle_download(self, packages, update, button):
+        def task():
+            try:
+                result = bundle_package_download(
+                    packages=packages,
+                    headless=self.headless_var.get(),
+                    refresh=update,
+                    overwrite=update,
+                )
+                self.last_dataset_path = result.get("excel_path")
+                exports = result.get("exports", [])
+                completed = [e for e in exports if e and not e.get("skipped")]
+                skipped = [e for e in exports if e and e.get("skipped")]
+                summary = (
+                    f"Package bundle {'updated' if update else 'created'}: "
+                    f"{len(completed)} package(s) exported, {len(skipped)} skipped. "
+                    f"Source workbook: {self.last_dataset_path}"
+                )
+                self._enqueue_log(self._timestamp(summary))
+                self.after(0, lambda: messagebox.showinfo("TurnpointPurger", summary))
+            except Exception as exc:
+                error = f"Bundle download failed: {exc}"
+                self._enqueue_log(self._timestamp(error))
+                self.after(0, lambda: messagebox.showerror("TurnpointPurger", error))
+
+        self._run_button_task(button, task)
+
+    def _open_package_picker(self, button, update=False):
+        if button["state"] == "disabled":
+            return
+        button.configure(state="disabled")
+        picker = tk.Toplevel(self)
+        picker.title("Select Packages")
+        picker.configure(bg="#03060f")
+        picker.grab_set()
+
+        def on_close():
+            if button:
+                button.configure(state="normal")
+            picker.destroy()
+
+        picker.protocol("WM_DELETE_WINDOW", on_close)
+
+        tk.Label(
+            picker,
+            text="Choose package(s) for bundle download",
+            fg="#a8d8ff",
+            bg="#03060f",
+            font=("Space Mono", 11, "bold"),
+        ).pack(padx=20, pady=(16, 8))
+
+        body = tk.Frame(picker, bg="#03060f")
+        body.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+
+        canvas = tk.Canvas(body, bg="#03060f", highlightthickness=0)
+        scroll = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg="#03060f")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        def queue_all():
+            self._start_bundle_download(None, update, button)
+            picker.destroy()
+
+        ttk.Button(
+            inner,
+            text="All Packages",
+            style="Cyber.TButton",
+            command=queue_all,
+        ).pack(fill="x", pady=4)
+
+        for pkg in self._get_manifest_packages():
+            ttk.Button(
+                inner,
+                text=pkg,
+                style="Cyber.TButton",
+                command=lambda p=pkg: (self._start_bundle_download([p], update, button), picker.destroy()),
+            ).pack(fill="x", pady=2)
+
     def _handle_collect_packages(self):
         def task():
             try:
@@ -910,31 +1016,7 @@ class TurnpointPurgerUI(tk.Tk):
 
     def _handle_bundle_download(self, update=False):
         button = self.update_bundle_button if update else self.bundle_button
-
-        def task():
-            try:
-                result = bundle_package_download(
-                    headless=self.headless_var.get(),
-                    refresh=update,
-                    overwrite=update,
-                )
-                self.last_dataset_path = result.get("excel_path")
-                exports = result.get("exports", [])
-                completed = [e for e in exports if e and not e.get("skipped")]
-                skipped = [e for e in exports if e and e.get("skipped")]
-                summary = (
-                    f"Package bundle {'updated' if update else 'created'}: "
-                    f"{len(completed)} package(s) exported, {len(skipped)} skipped. "
-                    f"Source workbook: {self.last_dataset_path}"
-                )
-                self._enqueue_log(self._timestamp(summary))
-                self.after(0, lambda: messagebox.showinfo("TurnpointPurger", summary))
-            except Exception as exc:
-                error = f"Bundle download failed: {exc}"
-                self._enqueue_log(self._timestamp(error))
-                self.after(0, lambda: messagebox.showerror("TurnpointPurger", error))
-
-        self._run_button_task(button, task)
+        self._open_package_picker(button, update=update)
 
     def _execute_purge(self, client_id):
         try:
