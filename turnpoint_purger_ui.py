@@ -1,6 +1,7 @@
 import csv
 import queue
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -19,6 +20,7 @@ from importcsv import (
     collect_clients_by_package,
     PACKAGE_MANIFEST_PATH,
     PACKAGE_FALLBACK_NAMES,
+    run_client_batch,
     run_turnpoint_purge,
     set_log_sink,
     set_operator_name,
@@ -72,6 +74,10 @@ class TurnpointPurgerUI(tk.Tk):
         self.atlas_tree = None
         self.atlas_status_var = tk.StringVar(value="Client atlas awaiting manifest.")
         self.manifest_path = PACKAGE_MANIFEST_PATH
+        self.cooldown_seconds = 120
+        self.cooldown_bar = None
+        self.cooldown_label_var = tk.StringVar(value="Cooldown idle")
+        self._cooldown_job = None
 
         configure_credentials(self.credential_username, self.credential_password)
 
@@ -408,6 +414,32 @@ class TurnpointPurgerUI(tk.Tk):
         )
         self.update_bundle_button.pack(anchor="w", pady=(0, 6), fill="x")
 
+        self.purge_all_button = ttk.Button(
+            self.discovery_frame,
+            text="Purge All Clients",
+            style="Danger.TButton",
+            command=self._handle_purge_all_clients,
+        )
+        self.purge_all_button.pack(anchor="w", pady=(0, 6), fill="x")
+
+        cooldown_label = tk.Label(
+            self.discovery_frame,
+            textvariable=self.cooldown_label_var,
+            fg="#f7c6c6",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        )
+        cooldown_label.pack(anchor="w", pady=(0, 2))
+
+        self.cooldown_bar = ttk.Progressbar(
+            self.discovery_frame,
+            mode="determinate",
+            length=320,
+            maximum=self.cooldown_seconds,
+            style="Ambient.Horizontal.TProgressbar",
+        )
+        self.cooldown_bar.pack(anchor="w", pady=(0, 6), fill="x")
+
         self.refresh_table_button = ttk.Button(
             self.discovery_frame,
             text="Refresh Client Atlas",
@@ -554,6 +586,31 @@ class TurnpointPurgerUI(tk.Tk):
             return
         for item in self.atlas_tree.get_children():
             self.atlas_tree.delete(item)
+
+    def _cancel_cooldown_timer(self):
+        if self._cooldown_job:
+            self.after_cancel(self._cooldown_job)
+            self._cooldown_job = None
+
+    def _start_cooldown_timer(self):
+        if not self.cooldown_bar:
+            return
+        self._cancel_cooldown_timer()
+        self.cooldown_bar["maximum"] = self.cooldown_seconds
+        self.cooldown_bar["value"] = 0
+        self.cooldown_label_var.set(f"Cooldown: {self.cooldown_seconds}s remaining")
+
+        def tick(remaining):
+            if remaining <= 0:
+                self.cooldown_bar["value"] = self.cooldown_seconds
+                self.cooldown_label_var.set("Cooldown complete")
+                self._cooldown_job = None
+                return
+            self.cooldown_bar["value"] = self.cooldown_seconds - remaining
+            self.cooldown_label_var.set(f"Cooldown: {remaining}s remaining")
+            self._cooldown_job = self.after(1000, tick, remaining - 1)
+
+        self._cooldown_job = self.after(1000, tick, self.cooldown_seconds - 1)
 
     def _build_client_atlas(self, parent):
         atlas_frame = tk.Frame(parent, bg="#050b16")
@@ -1008,6 +1065,110 @@ class TurnpointPurgerUI(tk.Tk):
                 self.after(0, lambda: messagebox.showerror("TurnpointPurger", error))
 
         self._run_button_task(self.collect_packages_button, task)
+
+    def _read_manifest_entries(self):
+        manifest = Path(self.manifest_path)
+        if not manifest.exists():
+            raise FileNotFoundError(
+                f"Manifest not found at {manifest}. Collect package manifest first."
+            )
+        entries = []
+        with manifest.open("r", newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                client_id = (row.get("Client ID") or row.get("client_id") or "").strip()
+                if not client_id:
+                    continue
+                entries.append(
+                    {
+                        "client_id": client_id,
+                        "client_name": row.get("Client Name") or row.get("client_name") or "",
+                        "package": row.get("Package") or row.get("package") or "",
+                    }
+                )
+        return entries
+
+    def _handle_purge_all_clients(self):
+        if self.is_running:
+            messagebox.showwarning(
+                "TurnpointPurger",
+                "Finish the current purge before running the purge-all cycle.",
+            )
+            return
+
+        confirm = messagebox.askyesno(
+            "Purge All Clients",
+            "This will sequentially purge every client in the manifest. Continue?",
+            icon="warning",
+        )
+        if not confirm:
+            return
+
+        try:
+            entries = self._read_manifest_entries()
+        except Exception as exc:
+            messagebox.showerror("TurnpointPurger", str(exc))
+            return
+        if not entries:
+            messagebox.showinfo(
+            "TurnpointPurger",
+            "Manifest is empty. Generate the manifest before purging.",
+            )
+            return
+
+        total = len(entries)
+        self.purge_all_button.configure(state="disabled")
+
+        def task():
+            self._set_running(True)
+            completed = duplicates = failed = 0
+            for index, entry in enumerate(entries, start=1):
+                client_id = entry["client_id"]
+                client_name = entry.get("client_name") or None
+                try:
+                    self._enqueue_log(
+                        self._timestamp(
+                            f"[Purge All] ({index}/{total}) Engaging client {client_id}"
+                        )
+                    )
+                    run_turnpoint_purge(
+                        client_id,
+                        client_name=client_name,
+                        headless=self.headless_var.get(),
+                        allow_duplicate=False,
+                        prompt_on_duplicate=False,
+                    )
+                    completed += 1
+                except DuplicateClientError as exc:
+                    duplicates += 1
+                    self._enqueue_log(self._timestamp(f"[Purge All] Duplicate skipped: {exc}"))
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    self._enqueue_log(
+                        self._timestamp(f"[Purge All] Error on {client_id}: {exc}")
+                    )
+                finally:
+                    self.after(0, self._load_manifest_table)
+                    self.after(0, self._refresh_sequence_stats)
+
+                if index < total:
+                    self.after(0, self._start_cooldown_timer)
+                    time.sleep(self.cooldown_seconds)
+
+            self.after(0, self._cancel_cooldown_timer)
+            self.after(0, lambda: self.cooldown_bar.configure(value=0))
+            self.after(0, lambda: self.cooldown_label_var.set("Cooldown idle"))
+            summary = (
+                f"Purge-all finished: {completed} completed, {duplicates} duplicates, {failed} failed."
+            )
+            self._enqueue_log(self._timestamp(summary))
+            self.after(0, self._load_manifest_table)
+            self.after(0, self._refresh_sequence_stats)
+            self.after(0, lambda: messagebox.showinfo("TurnpointPurger", summary))
+            self.after(0, lambda: self._set_running(False))
+            self.after(0, lambda: self.purge_all_button.configure(state="normal"))
+
+        threading.Thread(target=task, daemon=True).start()
 
     def _handle_find_purgeable_clients(self):
         def task():
