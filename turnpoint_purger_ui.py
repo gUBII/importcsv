@@ -75,9 +75,15 @@ class TurnpointPurgerUI(tk.Tk):
         self.atlas_status_var = tk.StringVar(value="Client atlas awaiting manifest.")
         self.manifest_path = PACKAGE_MANIFEST_PATH
         self.cooldown_seconds = 120
+        self.cooldown_seconds_var = tk.StringVar(value="120")
         self.cooldown_bar = None
         self.cooldown_label_var = tk.StringVar(value="Cooldown idle")
         self._cooldown_job = None
+        self.cooldown_override = False
+        self.force_button = None
+        self.bundle_progress = None
+        self.bundle_timestamp_var = tk.StringVar(value="Bundle not run yet")
+        self.manifest_timestamp_var = tk.StringVar(value="Manifest not generated")
 
         configure_credentials(self.credential_username, self.credential_password)
 
@@ -382,6 +388,24 @@ class TurnpointPurgerUI(tk.Tk):
         )
         discovery_label.pack(anchor="w", pady=(4, 6))
 
+        tk.Label(
+            self.discovery_frame,
+            text="Cooldown (sec) – set >=20 to bypass server lockout",
+            fg="#b3c4ff",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        ).pack(anchor="w", pady=(0, 2))
+        tk.Entry(
+            self.discovery_frame,
+            textvariable=self.cooldown_seconds_var,
+            font=("JetBrains Mono", 12),
+            bg="#0a1324",
+            fg="#e9f2ff",
+            insertbackground="#18e0ff",
+            relief="flat",
+            width=10,
+        ).pack(anchor="w", pady=(0, 6))
+
         self.collect_packages_button = ttk.Button(
             self.discovery_frame,
             text="Collect Package Manifest",
@@ -389,6 +413,14 @@ class TurnpointPurgerUI(tk.Tk):
             command=self._handle_collect_packages,
         )
         self.collect_packages_button.pack(anchor="w", pady=(0, 6), fill="x")
+
+        tk.Label(
+            self.discovery_frame,
+            textvariable=self.manifest_timestamp_var,
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 9),
+        ).pack(anchor="w", pady=(0, 6))
 
         self.find_button = ttk.Button(
             self.discovery_frame,
@@ -413,6 +445,22 @@ class TurnpointPurgerUI(tk.Tk):
             command=lambda: self._handle_bundle_download(update=True),
         )
         self.update_bundle_button.pack(anchor="w", pady=(0, 6), fill="x")
+
+        self.bundle_progress = ttk.Progressbar(
+            self.discovery_frame,
+            mode="indeterminate",
+            length=320,
+            style="Ambient.Horizontal.TProgressbar",
+        )
+        self.bundle_progress.pack(anchor="w", pady=(0, 4), fill="x")
+
+        tk.Label(
+            self.discovery_frame,
+            textvariable=self.bundle_timestamp_var,
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 9),
+        ).pack(anchor="w", pady=(0, 10))
 
         self.purge_all_button = ttk.Button(
             self.discovery_frame,
@@ -439,6 +487,15 @@ class TurnpointPurgerUI(tk.Tk):
             style="Ambient.Horizontal.TProgressbar",
         )
         self.cooldown_bar.pack(anchor="w", pady=(0, 6), fill="x")
+
+        self.force_button = ttk.Button(
+            self.discovery_frame,
+            text="Override cooldown / Force next client",
+            style="Danger.TButton",
+            command=self._force_cooldown,
+        )
+        self.force_button.pack(anchor="w", pady=(0, 6), fill="x")
+        self.force_button.configure(state="disabled")
 
         self.refresh_table_button = ttk.Button(
             self.discovery_frame,
@@ -591,26 +648,72 @@ class TurnpointPurgerUI(tk.Tk):
         if self._cooldown_job:
             self.after_cancel(self._cooldown_job)
             self._cooldown_job = None
+        if self.force_button:
+            self.force_button.configure(state="disabled")
 
-    def _start_cooldown_timer(self):
+    def _start_cooldown_timer(self, seconds):
         if not self.cooldown_bar:
             return
+        self.cooldown_seconds = seconds
+        self.cooldown_override = False
         self._cancel_cooldown_timer()
-        self.cooldown_bar["maximum"] = self.cooldown_seconds
+        self.cooldown_bar["maximum"] = seconds
         self.cooldown_bar["value"] = 0
-        self.cooldown_label_var.set(f"Cooldown: {self.cooldown_seconds}s remaining")
+        self.cooldown_label_var.set(f"Cooldown: {seconds}s remaining")
+        if self.force_button:
+            self.force_button.configure(state="normal")
 
-        def tick(remaining):
-            if remaining <= 0:
-                self.cooldown_bar["value"] = self.cooldown_seconds
-                self.cooldown_label_var.set("Cooldown complete")
-                self._cooldown_job = None
+        def tick(elapsed):
+            if self.cooldown_override:
+                self.cooldown_bar["value"] = seconds
+                self.cooldown_label_var.set("Cooldown overridden")
+                self._cancel_cooldown_timer()
                 return
-            self.cooldown_bar["value"] = self.cooldown_seconds - remaining
+            if elapsed >= seconds:
+                self.cooldown_bar["value"] = seconds
+                self.cooldown_label_var.set("Cooldown complete")
+                self._cancel_cooldown_timer()
+                return
+            self.cooldown_bar["value"] = elapsed
+            remaining = seconds - elapsed
             self.cooldown_label_var.set(f"Cooldown: {remaining}s remaining")
-            self._cooldown_job = self.after(1000, tick, remaining - 1)
+            self._cooldown_job = self.after(1000, tick, elapsed + 1)
 
-        self._cooldown_job = self.after(1000, tick, self.cooldown_seconds - 1)
+        self._cooldown_job = self.after(1000, tick, 1)
+
+    def _resolve_cooldown_seconds(self):
+        try:
+            value = int(self.cooldown_seconds_var.get())
+        except ValueError:
+            value = 120
+        if value < 20:
+            value = 20
+            self.cooldown_seconds_var.set(str(value))
+        self.cooldown_seconds = value
+        return value
+
+    def _sleep_with_override(self, seconds):
+        self.cooldown_override = False
+        for _ in range(seconds):
+            if self.cooldown_override:
+                break
+            time.sleep(1)
+        self.cooldown_override = False
+
+    def _force_cooldown(self):
+        if not self._cooldown_job:
+            return
+        self.cooldown_override = True
+        self.cooldown_label_var.set("Cooldown overridden - forcing next client")
+        self._cancel_cooldown_timer()
+
+    def _update_manifest_timestamp(self):
+        manifest = Path(self.manifest_path)
+        if manifest.exists():
+            ts = datetime.fromtimestamp(manifest.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            self.manifest_timestamp_var.set(f"Manifest updated: {ts}")
+        else:
+            self.manifest_timestamp_var.set("Manifest not generated")
 
     def _build_client_atlas(self, parent):
         atlas_frame = tk.Frame(parent, bg="#050b16")
@@ -686,6 +789,7 @@ class TurnpointPurgerUI(tk.Tk):
         if not manifest.exists():
             self._clear_atlas_tree()
             self._set_atlas_status("Manifest not found. Collect package manifest first.")
+            self._update_manifest_timestamp()
             return
         try:
             with manifest.open("r", newline="", encoding="utf-8") as fh:
@@ -722,6 +826,7 @@ class TurnpointPurgerUI(tk.Tk):
         self._set_atlas_status(
             f"Atlas loaded: {manifest_clients} client(s). Purged: {purged_count}."
         )
+        self._update_manifest_timestamp()
 
     def _load_profile_animation(self):
         gif_path = ASSETS_DIR / "maindp.gif"
@@ -963,6 +1068,10 @@ class TurnpointPurgerUI(tk.Tk):
         return packages
 
     def _start_bundle_download(self, packages, update, button):
+        if self.bundle_progress:
+            self.bundle_progress.start(14)
+        self.bundle_timestamp_var.set("Bundle download in progress...")
+
         def task():
             try:
                 result = bundle_package_download(
@@ -981,11 +1090,17 @@ class TurnpointPurgerUI(tk.Tk):
                     f"Source workbook: {self.last_dataset_path}"
                 )
                 self._enqueue_log(self._timestamp(summary))
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.after(0, lambda: self.bundle_timestamp_var.set(f"Bundle last run: {ts}"))
                 self.after(0, lambda: messagebox.showinfo("TurnpointPurger", summary))
             except Exception as exc:
                 error = f"Bundle download failed: {exc}"
                 self._enqueue_log(self._timestamp(error))
+                self.after(0, lambda: self.bundle_timestamp_var.set("Bundle failed. See log for details."))
                 self.after(0, lambda: messagebox.showerror("TurnpointPurger", error))
+            finally:
+                if self.bundle_progress:
+                    self.after(0, self.bundle_progress.stop)
 
         self._run_button_task(button, task)
 
@@ -1058,6 +1173,7 @@ class TurnpointPurgerUI(tk.Tk):
                 )
                 self._enqueue_log(self._timestamp(message))
                 self.after(0, self._load_manifest_table)
+                self.after(0, self._update_manifest_timestamp)
                 self.after(0, lambda: messagebox.showinfo("TurnpointPurger", message))
             except Exception as exc:
                 error = f"Package collection failed: {exc}"
@@ -1111,13 +1227,15 @@ class TurnpointPurgerUI(tk.Tk):
             return
         if not entries:
             messagebox.showinfo(
-            "TurnpointPurger",
-            "Manifest is empty. Generate the manifest before purging.",
+                "TurnpointPurger",
+                "Manifest is empty. Generate the manifest before purging.",
             )
             return
 
-        total = len(entries)
+        cooldown_seconds = self._resolve_cooldown_seconds()
         self.purge_all_button.configure(state="disabled")
+
+        total = len(entries)
 
         def task():
             self._set_running(True)
@@ -1151,9 +1269,11 @@ class TurnpointPurgerUI(tk.Tk):
                     self.after(0, self._load_manifest_table)
                     self.after(0, self._refresh_sequence_stats)
 
-                if index < total:
-                    self.after(0, self._start_cooldown_timer)
-                    time.sleep(self.cooldown_seconds)
+                if index < total and cooldown_seconds > 0:
+                    self.after(0, lambda s=cooldown_seconds: self._start_cooldown_timer(s))
+                    self._sleep_with_override(cooldown_seconds)
+                    self.after(0, self._cancel_cooldown_timer)
+                    self.after(0, lambda: self.cooldown_label_var.set("Cooldown idle"))
 
             self.after(0, self._cancel_cooldown_timer)
             self.after(0, lambda: self.cooldown_bar.configure(value=0))

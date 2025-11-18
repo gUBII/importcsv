@@ -79,6 +79,8 @@ turnpoint-budgeter       # standalone budget export helper
 - Buttons reuse the existing logging/status system so you get toast + log updates as the purgeable dataset or bundles are generated.
 - A new **Client Atlas** panel loads `PDCC/package_manifest.csv`, shows every client (order, ID, name, package) in a tree view, and color-codes rows: yellow for pending, red for already-purged IDs. Use the **Collect Package Manifest** button to crawl all packages from `clients.asp` and regenerate the manifest, then hit **Refresh Client Atlas** to reload or recolor the table.
 - Bundle download buttons now open a package picker: select “All Packages” or click individual package buttons to queue bundle exports sequentially. Each run logs per-package outcomes and reuses the purgeable Excel snapshot saved under PDCC.
+- Added a **Purge All Clients** workflow that reads every client ID from the manifest, purges sequentially, and enforces a configurable cooldown (enter the delay in seconds, minimum 20) to avoid TurnPoint 403 lockouts. A red “Override cooldown / Force next client” button lets you skip the wait mid-cycle, and the cooldown progress bar counts down every pause.
+- Bundle + manifest actions now surface operational metadata: an indeterminate progress bar spins while bundles are downloading, and timestamp labels (“Bundle last run…”, “Manifest updated…”) let ops teams see when each dataset was last refreshed.
 
 ## CLI Usage & Batch Purging
 - Running `python importcsv.py` still prompts for a single client ID, but now the CLI stops when a duplicate purge is detected. Pass `--force-duplicate` to override the guard, or `--no-duplicate-prompt` to fail fast without user input.

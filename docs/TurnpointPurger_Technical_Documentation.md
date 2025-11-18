@@ -61,6 +61,8 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 - Widgets include a visual panel with a “Powered by Nexix365” badge and circular GIF (Pillow `ImageSequence` + cropping), directive console for credentials/controls, and a log panel with a scrolled text console and ASCII signature.
 - Client discovery controls add **Collect Package Manifest**, **Find Purgeable Clients**, **Bundle Download (All Packages)**, and **Update package bundle to latest** buttons; the entire section is hidden until credentials are configured so bundle jobs cannot run anonymously. Each button spawns a background worker that calls the corresponding `importcsv` helper, logs results, updates the UI, and pops message boxes on completion/errors.
 - The new **Client Atlas** panel loads `PDCC/package_manifest.csv` into a `ttk.Treeview`, listing the ordered client number, ID, name, and package. Rows are tagged yellow (pending) or red (already purged) by checking `purger_state`. The **Refresh Client Atlas** button re-reads the manifest and recolors rows after purges.
+- **Purge All Clients** consumes the manifest list, purges sequentially, and enforces a configurable cooldown (minimum 20s). A progress bar shows the countdown and the red **Override cooldown / Force next client** button skips the wait when needed.
+- Manifest/bundle operations surface telemetry: there’s an indeterminate bundle progress bar plus “Bundle last run …” and “Manifest updated …” labels so operators know exactly when data was refreshed.
 - Event handlers:
   - `_handle_engage` spawns a background thread to call `run_turnpoint_purge`.
   - `_execute_purge` wraps the call, enqueues success/failure messages, displays message boxes, and refreshes counters.

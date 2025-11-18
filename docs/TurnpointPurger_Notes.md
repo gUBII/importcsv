@@ -41,7 +41,9 @@ This document captures the end-to-end context so future engineers can onboard qu
    - `Find Purgeable Clients` → downloads the Excel snapshot (using the new URL).  
    - `Bundle Download / Update` → opens a package picker (All Packages + per-package buttons). Each selection launches `bundle_package_download(packages=[...])` sequentially.  
    - `Refresh Client Atlas` → simple reload for manual purges.
-4. **Purge Loop:** Engage Purge spawns `run_turnpoint_purge` in a background thread; UI bars animate, log updates, message boxes reflect success/failure. Duplicate attempts bubble a `DuplicateClientError` toast.
+4. **Purge All Clients:** Reads every client ID from `package_manifest.csv`, purges sequentially, and respects the operator-defined cooldown (entry field defaults to 120 seconds, minimum enforced at 20). The countdown progress bar + override button (“Override cooldown / Force next client”) let ops see/suppress the wait that avoids TurnPoint’s 403 lockout.
+5. **Operational timestamps:** Below the manifest/bundle controls the UI now shows “Manifest updated …” and “Bundle last run …” labels plus an indeterminate bundle progress bar. Operators can prove when the datasets were refreshed and know when the next run completes.
+6. **Purge Loop:** Engage Purge (or Purge All) spawns `run_turnpoint_purge` in a background thread; UI bars animate, log updates, message boxes reflect success/failure, and duplicate attempts bubble a `DuplicateClientError` toast.
 
 ## 5. CLI Flags Outlook
 ```
