@@ -1,3 +1,4 @@
+import csv
 import queue
 import threading
 from datetime import datetime
@@ -15,6 +16,8 @@ from importcsv import (
     format_timestamp,
     find_purgeable_clients,
     bundle_package_download,
+    collect_clients_by_package,
+    PACKAGE_MANIFEST_PATH,
     run_turnpoint_purge,
     set_log_sink,
     set_operator_name,
@@ -65,6 +68,9 @@ class TurnpointPurgerUI(tk.Tk):
         self.scroll_canvas = None
         self.scroll_frame = None
         self.discovery_frame = None
+        self.atlas_tree = None
+        self.atlas_status_var = tk.StringVar(value="Client atlas awaiting manifest.")
+        self.manifest_path = PACKAGE_MANIFEST_PATH
 
         configure_credentials(self.credential_username, self.credential_password)
 
@@ -263,6 +269,7 @@ class TurnpointPurgerUI(tk.Tk):
         self.secondary_bar.start(65)
 
         self._build_artwork_section(visual_panel)
+        self._build_client_atlas(visual_panel)
 
         status_label = tk.Label(
             visual_panel,
@@ -368,6 +375,14 @@ class TurnpointPurgerUI(tk.Tk):
         )
         discovery_label.pack(anchor="w", pady=(4, 6))
 
+        self.collect_packages_button = ttk.Button(
+            self.discovery_frame,
+            text="Collect Package Manifest",
+            style="Cyber.TButton",
+            command=self._handle_collect_packages,
+        )
+        self.collect_packages_button.pack(anchor="w", pady=(0, 6), fill="x")
+
         self.find_button = ttk.Button(
             self.discovery_frame,
             text="Find Purgeable Clients",
@@ -391,6 +406,14 @@ class TurnpointPurgerUI(tk.Tk):
             command=lambda: self._handle_bundle_download(update=True),
         )
         self.update_bundle_button.pack(anchor="w", pady=(0, 6), fill="x")
+
+        self.refresh_table_button = ttk.Button(
+            self.discovery_frame,
+            text="Refresh Client Atlas",
+            style="Cyber.TButton",
+            command=self._load_manifest_table,
+        )
+        self.refresh_table_button.pack(anchor="w", pady=(0, 6), fill="x")
 
         notes = tk.Label(
             controls_panel,
@@ -521,6 +544,110 @@ class TurnpointPurgerUI(tk.Tk):
                 fill="#7cc3ff",
                 font=("Space Mono", 12),
             )
+
+    def _set_atlas_status(self, message):
+        self.atlas_status_var.set(message)
+
+    def _clear_atlas_tree(self):
+        if not self.atlas_tree:
+            return
+        for item in self.atlas_tree.get_children():
+            self.atlas_tree.delete(item)
+
+    def _build_client_atlas(self, parent):
+        atlas_frame = tk.Frame(parent, bg="#050b16")
+        atlas_frame.pack(fill="both", expand=True, padx=20, pady=(10, 10))
+        title = tk.Label(
+            atlas_frame,
+            text="Client Atlas",
+            fg="#f5fbff",
+            bg="#050b16",
+            font=("Space Grotesk", 16, "bold"),
+        )
+        title.pack(anchor="w", pady=(0, 4))
+
+        status = tk.Label(
+            atlas_frame,
+            textvariable=self.atlas_status_var,
+            fg="#7ecdf3",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        )
+        status.pack(anchor="w", pady=(0, 6))
+
+        tree_container = tk.Frame(atlas_frame, bg="#050b16")
+        tree_container.pack(fill="both", expand=True)
+
+        columns = ("order", "client_id", "client_name", "package")
+        tree = ttk.Treeview(
+            tree_container,
+            columns=columns,
+            show="headings",
+            height=12,
+        )
+        tree.heading("order", text="#", anchor="center")
+        tree.heading("client_id", text="Client ID", anchor="center")
+        tree.heading("client_name", text="Client Name", anchor="w")
+        tree.heading("package", text="Package", anchor="w")
+        tree.column("order", width=60, anchor="center")
+        tree.column("client_id", width=120, anchor="center")
+        tree.column("client_name", width=280, anchor="w")
+        tree.column("package", width=260, anchor="w")
+
+        scrollbar = ttk.Scrollbar(tree_container, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        tree.tag_configure("pending", background="#262a15", foreground="#f2f0b5")
+        tree.tag_configure("purged", background="#3c131d", foreground="#ff9db7")
+
+        self.atlas_tree = tree
+        self._load_manifest_table()
+
+    def _load_manifest_table(self):
+        if not self.atlas_tree:
+            return
+        manifest = Path(self.manifest_path)
+        if not manifest.exists():
+            self._clear_atlas_tree()
+            self._set_atlas_status("Manifest not found. Collect package manifest first.")
+            return
+        try:
+            with manifest.open("r", newline="", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                rows = list(reader)
+        except Exception as exc:
+            self._clear_atlas_tree()
+            self._set_atlas_status(f"Failed to read manifest: {exc}")
+            return
+
+        self._clear_atlas_tree()
+        manifest_clients = 0
+        purged_ids = set()
+        purged_count = 0
+        try:
+            stats = get_purge_statistics()
+            clients = (stats or {}).get("clients") or {}
+            purged_ids = {str(cid) for cid in clients.keys()}
+        except Exception:
+            purged_ids = set()
+
+        for row in rows:
+            order = row.get("Order") or row.get("order") or ""
+            client_id = (row.get("Client ID") or row.get("client_id") or "").strip()
+            client_name = row.get("Client Name") or row.get("client_name") or ""
+            package = row.get("Package") or row.get("package") or ""
+            tag = "purged" if client_id and client_id in purged_ids else "pending"
+            if tag == "purged":
+                purged_count += 1
+            values = (order, client_id, client_name, package)
+            self.atlas_tree.insert("", "end", values=values, tags=(tag,))
+            manifest_clients += 1
+
+        self._set_atlas_status(
+            f"Atlas loaded: {manifest_clients} client(s). Purged: {purged_count}."
+        )
 
     def _load_profile_animation(self):
         gif_path = ASSETS_DIR / "maindp.gif"
@@ -738,6 +865,28 @@ class TurnpointPurgerUI(tk.Tk):
                 self.after(0, lambda: button.configure(state="normal"))
 
         threading.Thread(target=runner, daemon=True).start()
+
+    def _handle_collect_packages(self):
+        def task():
+            try:
+                result = collect_clients_by_package(headless=self.headless_var.get())
+                manifest_path = Path(result.get("manifest_path", PACKAGE_MANIFEST_PATH))
+                self.manifest_path = manifest_path
+                count = result.get("count", 0)
+                packages = result.get("packages") or []
+                message = (
+                    f"Package collection complete: {count} unique client(s) across "
+                    f"{len(packages)} package(s).\nManifest saved at:\n{manifest_path}"
+                )
+                self._enqueue_log(self._timestamp(message))
+                self.after(0, self._load_manifest_table)
+                self.after(0, lambda: messagebox.showinfo("TurnpointPurger", message))
+            except Exception as exc:
+                error = f"Package collection failed: {exc}"
+                self._enqueue_log(self._timestamp(error))
+                self.after(0, lambda: messagebox.showerror("TurnpointPurger", error))
+
+        self._run_button_task(self.collect_packages_button, task)
 
     def _handle_find_purgeable_clients(self):
         def task():

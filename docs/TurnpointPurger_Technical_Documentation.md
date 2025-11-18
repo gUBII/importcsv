@@ -59,7 +59,8 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 - Uses `queue.Queue` to marshal logs from the core script (`set_log_sink`).
 - Wraps the entire dashboard inside a full-screen, scrollable canvas so all controls/logs remain accessible regardless of monitor size.
 - Widgets include a visual panel with a “Powered by Nexix365” badge and circular GIF (Pillow `ImageSequence` + cropping), directive console for credentials/controls, and a log panel with a scrolled text console and ASCII signature.
-- Client discovery controls add **Find Purgeable Clients**, **Bundle Download (All Packages)**, and **Update package bundle to latest** buttons; the entire section is hidden until credentials are configured so bundle jobs cannot run anonymously. Each button spawns a background worker that calls the new `importcsv` helpers, logs results, and pops message boxes on completion/errors.
+- Client discovery controls add **Collect Package Manifest**, **Find Purgeable Clients**, **Bundle Download (All Packages)**, and **Update package bundle to latest** buttons; the entire section is hidden until credentials are configured so bundle jobs cannot run anonymously. Each button spawns a background worker that calls the corresponding `importcsv` helper, logs results, updates the UI, and pops message boxes on completion/errors.
+- The new **Client Atlas** panel loads `PDCC/package_manifest.csv` into a `ttk.Treeview`, listing the ordered client number, ID, name, and package. Rows are tagged yellow (pending) or red (already purged) by checking `purger_state`. The **Refresh Client Atlas** button re-reads the manifest and recolors rows after purges.
 - Event handlers:
   - `_handle_engage` spawns a background thread to call `run_turnpoint_purge`.
   - `_execute_purge` wraps the call, enqueues success/failure messages, displays message boxes, and refreshes counters.

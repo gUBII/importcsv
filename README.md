@@ -77,6 +77,7 @@ turnpoint-budgeter       # standalone budget export helper
 - Launches in full-screen (zoomed/maximized) mode and keeps a scrollable layout so the Directive Console, status panels, and log feed stay visible even on smaller displays.
 - Client Discovery controls (Find Purgeable Clients + Bundle Download actions) stay hidden until valid credentials are configured, preventing accidental bundle jobs with empty credentials.
 - Buttons reuse the existing logging/status system so you get toast + log updates as the purgeable dataset or bundles are generated.
+- A new **Client Atlas** panel loads `PDCC/package_manifest.csv`, shows every client (order, ID, name, package) in a tree view, and color-codes rows: yellow for pending, red for already-purged IDs. Use the **Collect Package Manifest** button to crawl all packages from `clients.asp` and regenerate the manifest, then hit **Refresh Client Atlas** to reload or recolor the table.
 
 ## CLI Usage & Batch Purging
 - Running `python importcsv.py` still prompts for a single client ID, but now the CLI stops when a duplicate purge is detected. Pass `--force-duplicate` to override the guard, or `--no-duplicate-prompt` to fail fast without user input.
