@@ -6,6 +6,7 @@ import time
 import shutil
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Iterable, List, Dict
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
@@ -30,6 +31,7 @@ BASE_URL = "https://tp1.com.au/"
 CLIENT_ID = "56851"
 CLIENT_NAME = "KHAIR Adam"
 APP_VERSION = "2.0.1"
+CLIENTS_PAGE_URL = f"{BASE_URL.rstrip('/')}/clients.asp?posted=yes"
 ARCHIVE_ROOT = Path(
     os.getenv("PURGED_ARCHIVE_ROOT", str(Path.home() / "PurgedClients"))
 ).expanduser().resolve()
@@ -46,6 +48,7 @@ PDCC_DOWNLOADS_DIR = PDCC_ROOT / "_downloads"
 LATEST_PURGEABLE_EXCEL = PDCC_ROOT / "latest_purgeable_clients.xlsx"
 DEFAULT_PURGEABLE_CLIENTS_URL = f"{BASE_URL.rstrip('/')}/client-list.asp?purgeable=yes"
 PURGEABLE_CLIENTS_URL = os.getenv("PURGEABLE_CLIENTS_URL")
+PACKAGE_MANIFEST_PATH = PDCC_ROOT / "package_manifest.csv"
 PACKAGE_FALLBACK_NAMES = [
     "Admin",
     "HCP L1",
@@ -187,6 +190,195 @@ def _assert_valid_purgeable_page(driver, url):
             f"Purgeable client page returned 404 at {url}. "
             "Set PURGEABLE_CLIENTS_URL (or use --purgeable-url) to point to the correct TurnPoint client list."
         )
+
+
+def _set_clients_page_size(driver, limit=10000):
+    try:
+        select_elem = driver.find_element(By.NAME, "psize")
+    except NoSuchElementException:
+        log_message("Clients page size selector not found.")
+        return False
+
+    dropdown = Select(select_elem)
+    preferred_values = {str(limit), "10000", "5000", "2500", "1000"}
+    for value in preferred_values:
+        try:
+            dropdown.select_by_value(value)
+            log_message(f"Clients page size set to {value}.")
+            return True
+        except Exception:
+            continue
+
+    numeric_options = []
+    for option in dropdown.options:
+        val = option.get_attribute("value") or option.text
+        try:
+            numeric_options.append((int(val), val, option.text.strip()))
+        except (TypeError, ValueError):
+            continue
+    if numeric_options:
+        numeric_options.sort(reverse=True)
+        _, value, visible = numeric_options[0]
+        try:
+            dropdown.select_by_value(value)
+        except Exception:
+            dropdown.select_by_visible_text(visible)
+        log_message(f"Clients page size fallback set to {visible}.")
+        return True
+
+    log_message("Unable to adjust clients page size; continuing with default.")
+    return False
+
+
+def _set_package_filter(driver, package_label):
+    try:
+        select_elem = driver.find_element(By.NAME, "fld569")
+    except NoSuchElementException:
+        log_message("Package filter select not found on clients page.")
+        return False
+    dropdown = Select(select_elem)
+    normalized_target = _normalize_package(package_label)
+    for option in dropdown.options:
+        label_text = option.text.strip()
+        if _normalize_package(label_text) == normalized_target:
+            dropdown.select_by_visible_text(label_text)
+            log_message(f"Package filter set to '{label_text}'.")
+            return True
+    try:
+        dropdown.select_by_visible_text(package_label)
+        log_message(f"Package filter set to '{package_label}'.")
+        return True
+    except Exception:
+        log_message(f"Package label '{package_label}' not available in filter.")
+        return False
+
+
+def _submit_clients_search(driver):
+    search_selectors = [
+        "//input[@type='submit' and contains(translate(@value,'SEARCH','search'),'search')]",
+        "//button[contains(translate(text(),'SEARCH','search'),'search')]",
+    ]
+    for xpath in search_selectors:
+        try:
+            button = driver.find_element(By.XPATH, xpath)
+            driver.execute_script("arguments[0].click();", button)
+            log_message("Client search triggered.")
+            return True
+        except Exception:
+            continue
+    log_message("Client search button not found.")
+    return False
+
+
+CLIENT_LINK_XPATH = (
+    "//a[contains(@href,'client-details.asp') and contains(@href,'eid=')]"
+)
+
+
+def _extract_client_rows_from_elements(elements, package_label):
+    entries: List[Dict[str, str]] = []
+    for element in elements:
+        try:
+            href = (element.get_attribute("href") or "").strip()
+        except Exception:
+            href = ""
+        if not href:
+            continue
+        match = re.search(r"eid=(\d+)", href)
+        if not match:
+            continue
+        client_id = match.group(1)
+        name = (element.text or "").strip()
+        entries.append(
+            {
+                "package": package_label,
+                "client_id": client_id,
+                "client_name": name,
+                "details_url": href,
+            }
+        )
+    return entries
+
+
+def _write_package_manifest(entries: Iterable[Dict[str, str]], manifest_path: Path):
+    ensure_pdcc_root()
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["Order", "Package", "Client ID", "Client Name", "Details URL"])
+        for index, entry in enumerate(entries, start=1):
+            writer.writerow(
+                [
+                    index,
+                    entry.get("package", ""),
+                    entry.get("client_id", ""),
+                    entry.get("client_name", ""),
+                    entry.get("details_url", ""),
+                ]
+            )
+    return manifest_path
+
+
+def _collect_clients_for_package(driver, package_label, limit=10000):
+    driver.get(CLIENTS_PAGE_URL)
+    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+    _set_clients_page_size(driver, limit)
+    filter_set = _set_package_filter(driver, package_label)
+    if not filter_set:
+        return []
+    _submit_clients_search(driver)
+    try:
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.XPATH, CLIENT_LINK_XPATH))
+        )
+    except TimeoutException:
+        log_message(f"No client links found for package '{package_label}'.")
+        return []
+    elements = driver.find_elements(By.XPATH, CLIENT_LINK_XPATH)
+    entries = _extract_client_rows_from_elements(elements, package_label)
+    log_message(f"Package '{package_label}': found {len(entries)} client link(s).")
+    return entries
+
+
+def collect_clients_by_package(
+    packages=None,
+    *,
+    headless=False,
+    limit=10000,
+    manifest_path: Path | None = None,
+):
+    ensure_pdcc_root()
+    target_manifest = manifest_path or PACKAGE_MANIFEST_PATH
+    packages_to_visit = packages or PACKAGE_FALLBACK_NAMES
+    driver = build_chrome_driver(headless=headless, download_dir=PDCC_DOWNLOADS_DIR)
+    all_entries: List[Dict[str, str]] = []
+    seen_ids = set()
+    try:
+        login(driver)
+        for package_label in packages_to_visit:
+            entries = _collect_clients_for_package(driver, package_label, limit=limit)
+            for entry in entries:
+                client_id = entry.get("client_id")
+                if not client_id or client_id in seen_ids:
+                    continue
+                seen_ids.add(client_id)
+                all_entries.append(entry)
+    finally:
+        driver.quit()
+
+    if not all_entries:
+        log_message("No clients discovered across the requested packages.")
+    else:
+        _write_package_manifest(all_entries, Path(target_manifest))
+        log_message(
+            f"Package collector saved {len(all_entries)} unique client(s) to {target_manifest}."
+        )
+    return {
+        "manifest_path": Path(target_manifest),
+        "count": len(all_entries),
+        "packages": packages_to_visit,
+    }
+
 
 
 def assign_universal_sequence(universal_id):
@@ -1341,6 +1533,11 @@ def parse_cli_args():
         "--purgeable-url",
         help="Override the purgeable client list URL (defaults to BASE_URL + client-list.asp?purgeable=yes or PURGEABLE_CLIENTS_URL env).",
     )
+    parser.add_argument(
+        "--collect-packages",
+        action="store_true",
+        help="Crawl clients.asp for each package and generate a package manifest CSV.",
+    )
     return parser.parse_args()
 
 
@@ -1350,6 +1547,16 @@ def main():
     bundle_packages = parse_package_args(args.bundle_packages)
     manifest_path = args.manifest
     purgeable_url = args.purgeable_url
+    manifest_destination = Path(manifest_path).expanduser() if manifest_path else None
+
+    if args.collect_packages:
+        collect_clients_by_package(
+            packages=packages or None,
+            headless=args.headless,
+            limit=10000,
+            manifest_path=manifest_destination,
+        )
+        return
 
     if args.find_purgeable or args.bundle_download or args.update_bundle:
         if args.find_purgeable:

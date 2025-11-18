@@ -31,6 +31,7 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 | **Duplicate handling** | `get_client_last_purge`, `create_duplicate_report`, `confirm_duplicate_cli` consult JSON history and warn before rerunning the same client. |
 | **Duplicate gate** | `guard_against_duplicate` enforces the duplicate policy (raise, prompt, or override) before a purge reserves the next NexisID. |
 | **Purgeable discovery** | `find_purgeable_clients`, `_download_purgeable_clients_excel`, `_discover_packages_from_dataframe` force the TurnPoint search limit to 10k, apply purgeable filters, download the Excel dataset, and persist it to `PDCC/latest_purgeable_clients.xlsx`. |
+| **Package collector** | `collect_clients_by_package` navigates `clients.asp`, iterates every package label (`select[name="fld569"]`), captures all `client-details.asp?eid=*` links, de-duplicates them, and writes `PDCC/package_manifest.csv` for use by future UI tables. Helpers `_set_clients_page_size`, `_set_package_filter`, `_extract_client_rows_from_elements`, and `_write_package_manifest` keep the workflow maintainable/testable. |
 | **Package bundles** | `bundle_package_download` + `_export_package_dataframe` convert the purgeable workbook into per-package Excel/CSV pairs under `Purged Client/Package Divided Client Credential (PDCC)/<Package>/`. Supports bundle refresh (`refresh/update` flag) and package subsets. |
 | **Credentials** | `configure_credentials`, `ensure_credentials`, runtime globals allow the GUI to override `.env` values. |
 | **Archive management** | `assign_universal_sequence`, `ensure_archive_root`, `configure_client_context`, `update_final_client_name`, `finalize_output_directory`, `cleanup_old_csvs`, `reset_purge_data`, `calculate_directory_bytes` manage folder structure, sequential numbering, rename fallback (copytree on cross-device operations). |
@@ -107,6 +108,7 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 - Working folder: `PurgedClients/<NexisID ClientID>/` containing CSVs, downloaded documents, and `NDIS_Budget_Exports/`.
 - Final folder renamed to include client names (`<NexisID CLIENT NAME (ID)>`); fallback copytree handles cross-device/permission issues.
 - Package exports: `Purged Client/Package Divided Client Credential (PDCC)/` houses the purgeable workbook (`latest_purgeable_clients.xlsx`) plus per-package folders with `<Package Name>_clients.xlsx` + `.csv`.
+- Package manifest: `PDCC/package_manifest.csv` lists every discovered client (`order, package, client id, client name, details url`) collected via the new package crawler.
 - JSON state file structure:
   ```json
   {
