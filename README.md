@@ -78,6 +78,7 @@ turnpoint-budgeter       # standalone budget export helper
 - Client Discovery controls (Find Purgeable Clients + Bundle Download actions) stay hidden until valid credentials are configured, preventing accidental bundle jobs with empty credentials.
 - Buttons reuse the existing logging/status system so you get toast + log updates as the purgeable dataset or bundles are generated.
 - A new **Client Atlas** panel loads `PDCC/package_manifest.csv`, shows every client (order, ID, name, package) in a tree view, and color-codes rows: yellow for pending, red for already-purged IDs. Use the **Collect Package Manifest** button to crawl all packages from `clients.asp` and regenerate the manifest, then hit **Refresh Client Atlas** to reload or recolor the table.
+- Bundle download buttons now open a package picker: select “All Packages” or click individual package buttons to queue bundle exports sequentially. Each run logs per-package outcomes and reuses the purgeable Excel snapshot saved under PDCC.
 
 ## CLI Usage & Batch Purging
 - Running `python importcsv.py` still prompts for a single client ID, but now the CLI stops when a duplicate purge is detected. Pass `--force-duplicate` to override the guard, or `--no-duplicate-prompt` to fail fast without user input.
@@ -108,6 +109,19 @@ turnpoint-budgeter       # standalone budget export helper
 - Bundle runs reuse the latest purgeable workbook when present and only re-download when `--update-bundle` is supplied.
 - Set `PURGEABLE_CLIENTS_URL` (and optionally `PDCC_ROOT`) in `.env` if your TurnPoint tenant exposes the purgeable list at a different path or you prefer a custom export root. For one-off runs, pass `--purgeable-url https://tp1.com.au/custom-client-list.asp` to override without editing the environment.
 - Need a turnkey manifest of every client per package? Run `python importcsv.py --collect-packages` (optionally combine with `--package "NDIS - Plan Managed"` to limit the crawl). The crawler logs in, iterates each package filter on `clients.asp`, and writes `Package Divided Client Credential (PDCC)/package_manifest.csv` with ordered rows (`order, package, client id, client name, details url`). The manifest will feed the upcoming UI tables.
+- For an even deeper dive (architecture, workflow, UML), refer to `docs/TurnpointPurger_Notes.md`.
+
+## Windows Build Steps
+1. `python -m venv .venv`  
+   `.\.venv\Scripts\activate`
+2. `pip install --upgrade pip`
+3. `pip install -e .`
+4. `pip install pyinstaller`
+5. *(optional)* `python Declutter.py` to remove previous `build/`, `dist/`, `.egg-info`, `.DS_Store`, and `__pycache__`.
+6. `pyinstaller turnpoint_gui.spec` → GUI bundle (`dist\windows\TurnpointPurger\`)
+7. `pyinstaller turnpoint_cli.spec` → CLI bundle (`dist\windows\TurnpointPurgerCLI\`)
+8. Alternatively run `python build.py --gui --cli` to produce both in one shot.
+9. Zip the `dist\windows\TurnpointPurger*` folders and ship them with instructions to drop a `.env` (TP credentials + optional overrides) beside the EXE.
 
 ## Packaging Notes
 - All output folders live under `~/PurgedClients/` (override via `PURGED_ARCHIVE_ROOT`) with sequential NexisIDs to avoid collisions.

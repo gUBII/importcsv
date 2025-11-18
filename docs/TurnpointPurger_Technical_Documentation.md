@@ -110,6 +110,26 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 - Final folder renamed to include client names (`<NexisID CLIENT NAME (ID)>`); fallback copytree handles cross-device/permission issues.
 - Package exports: `Purged Client/Package Divided Client Credential (PDCC)/` houses the purgeable workbook (`latest_purgeable_clients.xlsx`) plus per-package folders with `<Package Name>_clients.xlsx` + `.csv`.
 - Package manifest: `PDCC/package_manifest.csv` lists every discovered client (`order, package, client id, client name, details url`) collected via the new package crawler.
+- UML overview (PlantUML):
+
+```plantuml
+@startuml
+skinparam componentStyle rectangle
+package "Core Modules" {
+  [importcsv.py] --> [purger_state.py]
+  [importcsv.py] --> [NDISBUDGETER.py]
+  [importcsv.py] --> [PDCC Assets]
+}
+package "UI Layer" {
+  [turnpoint_purger_ui.py] --> [importcsv.py]
+  [turnpoint_purger_ui.py] --> [purger_state.py]
+}
+[importcsv.py] --> [Chrome WebDriver]
+[Chrome WebDriver] --> [TurnPoint Portal]
+[purger_state.py] --> [~/.turnpoint_purger/purger_state.json]
+[importcsv.py] --> [PurgedClients/<NexisID>]
+@enduml
+```
 - JSON state file structure:
   ```json
   {
