@@ -18,6 +18,7 @@ from importcsv import (
     bundle_package_download,
     collect_clients_by_package,
     PACKAGE_MANIFEST_PATH,
+    PACKAGE_FALLBACK_NAMES,
     run_turnpoint_purge,
     set_log_sink,
     set_operator_name,
@@ -579,11 +580,27 @@ class TurnpointPurgerUI(tk.Tk):
         tree_container.pack(fill="both", expand=True)
 
         columns = ("order", "client_id", "client_name", "package")
+        atlas_style = ttk.Style(self)
+        atlas_style.configure(
+            "Atlas.Treeview",
+            background="#0d1424",
+            fieldbackground="#0d1424",
+            foreground="#dbe7ff",
+            rowheight=26,
+            bordercolor="#0d1424",
+            borderwidth=0,
+        )
+        atlas_style.map(
+            "Atlas.Treeview",
+            background=[("selected", "#1f3554")],
+            foreground=[("selected", "#fefcf5")],
+        )
         tree = ttk.Treeview(
             tree_container,
             columns=columns,
             show="headings",
             height=12,
+            style="Atlas.Treeview",
         )
         tree.heading("order", text="#", anchor="center")
         tree.heading("client_id", text="Client ID", anchor="center")
@@ -599,8 +616,8 @@ class TurnpointPurgerUI(tk.Tk):
         tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        tree.tag_configure("pending", background="#262a15", foreground="#f2f0b5")
-        tree.tag_configure("purged", background="#3c131d", foreground="#ff9db7")
+        tree.tag_configure("pending", background="#1b2d16", foreground="#f9f5c8")
+        tree.tag_configure("purged", background="#471524", foreground="#ffc2d3")
 
         self.atlas_tree = tree
         self._load_manifest_table()
@@ -885,8 +902,6 @@ class TurnpointPurgerUI(tk.Tk):
             except Exception:
                 packages = []
         if not packages:
-            from importcsv import PACKAGE_FALLBACK_NAMES
-
             packages = PACKAGE_FALLBACK_NAMES
         return packages
 

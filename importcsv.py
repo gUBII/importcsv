@@ -46,7 +46,10 @@ PDCC_ROOT = Path(
 ).expanduser().resolve()
 PDCC_DOWNLOADS_DIR = PDCC_ROOT / "_downloads"
 LATEST_PURGEABLE_EXCEL = PDCC_ROOT / "latest_purgeable_clients.xlsx"
-DEFAULT_PURGEABLE_CLIENTS_URL = f"{BASE_URL.rstrip('/')}/client-list.asp?purgeable=yes"
+DEFAULT_PURGEABLE_CLIENTS_URL = (
+    f"{BASE_URL.rstrip('/')}/clients.asp?posted=yes&fld253=&fld897=&fld256=&fld256_to=&"
+    "fld258=&fld823=&fld260=&fld912=&fld913=&fld735=&fld569=&fld568=&fld470=&fld264=True&psize=10000&ob=&sbmt=yes"
+)
 PURGEABLE_CLIENTS_URL = os.getenv("PURGEABLE_CLIENTS_URL")
 PACKAGE_MANIFEST_PATH = PDCC_ROOT / "package_manifest.csv"
 PACKAGE_FALLBACK_NAMES = [
@@ -1019,8 +1022,10 @@ def _trigger_excel_download(driver):
         EC.element_to_be_clickable(
             (
                 By.XPATH,
-                "//a[contains(translate(text(),'EXCEL','excel'),'excel') or contains(@title,'Excel') or contains(@onclick,'Excel')]"
-                " | //button[contains(translate(text(),'EXCEL','excel'),'excel')]",
+                "//a[contains(translate(text(),'EXCEL','excel'),'excel') or contains(@title,'Excel') "
+                "or contains(@onclick,'generateXL')]"
+                " | //button[contains(translate(text(),'EXCEL','excel'),'excel')]"
+                " | //img[@alt='Excel']/parent::a[contains(@onclick,'generateXL')]",
             )
         )
     )
@@ -1038,7 +1043,7 @@ def _download_purgeable_clients_excel(
     driver.get(resolved_url)
     WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
     _assert_valid_purgeable_page(driver, resolved_url)
-    _set_record_limit(driver, limit)
+    _set_clients_page_size(driver, limit)
     _apply_purgeable_filter(driver)
     previous = snapshot_files(target_dir)
     _trigger_excel_download(driver)
