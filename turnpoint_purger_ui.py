@@ -31,6 +31,16 @@ from importcsv import (
     RUNTIME_PASSWORD,
 )
 from purger_state import get_purge_statistics
+from worker_purger import (
+    WORKER_MANIFEST_PATH,
+    collect_workers,
+    download_worker_excel,
+    load_worker_manifest,
+    run_worker_batch as run_worker_batch,
+    run_worker_purge,
+    reset_worker_data,
+)
+from worker_state import get_worker_statistics
 
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -85,12 +95,35 @@ class TurnpointPurgerUI(tk.Tk):
         self.bundle_timestamp_var = tk.StringVar(value="Bundle not run yet")
         self.manifest_timestamp_var = tk.StringVar(value="Manifest not generated")
 
+        # Worker branch state
+        self.worker_status_var = tk.StringVar(
+            value="Idle // Worker purging system primed. Awaiting directive."
+        )
+        self.worker_id_var = tk.StringVar(value="")
+        self.worker_sequence_var = tk.StringVar(value="Worker sequence tracker offline")
+        self.worker_manifest_path = WORKER_MANIFEST_PATH
+        self.worker_atlas_tree = None
+        self.worker_atlas_status_var = tk.StringVar(
+            value="Worker atlas awaiting manifest."
+        )
+        self.worker_cooldown_seconds = 120
+        self.worker_cooldown_seconds_var = tk.StringVar(value="120")
+        self.worker_cooldown_bar = None
+        self.worker_cooldown_label_var = tk.StringVar(value="Cooldown idle")
+        self._worker_cooldown_job = None
+        self.worker_cooldown_override = False
+        self.worker_force_button = None
+        self.worker_manifest_timestamp_var = tk.StringVar(
+            value="Worker manifest not generated"
+        )
+
         configure_credentials(self.credential_username, self.credential_password)
 
         self._setup_styles()
         self._build_scrollable_root()
         self._build_layout(self.scroll_frame)
         self._refresh_sequence_stats()
+        self._refresh_worker_sequence_stats()
         self._refresh_credential_display()
         self._toggle_discovery_section(self._bundle_buttons_ready())
 
@@ -176,7 +209,9 @@ class TurnpointPurgerUI(tk.Tk):
         container = tk.Frame(self, bg=self["bg"])
         container.pack(fill="both", expand=True)
         canvas = tk.Canvas(container, bg=self["bg"], highlightthickness=0)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        scrollbar = tk.Scrollbar(
+            container, orient="vertical", command=canvas.yview, width=16
+        )
         canvas.configure(yscrollcommand=scrollbar.set)
 
         inner = tk.Frame(canvas, bg=self["bg"])
@@ -224,18 +259,17 @@ class TurnpointPurgerUI(tk.Tk):
     def _build_layout(self, parent):
         container = tk.Frame(parent, bg=self["bg"])
         container.pack(fill="both", expand=True, padx=24, pady=20)
-        container.columnconfigure(0, weight=3)
-        container.columnconfigure(1, weight=2)
-        container.rowconfigure(2, weight=1)
 
-        visual_panel = tk.Frame(container, bg="#050b16", bd=0, relief="flat")
-        visual_panel.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 24))
+        notebook = ttk.Notebook(container)
+        client_tab = tk.Frame(notebook, bg="#050b16")
+        worker_tab = tk.Frame(notebook, bg="#050b16")
+        notebook.add(client_tab, text="Client Purger")
+        notebook.add(worker_tab, text="Worker Purger")
+        notebook.pack(fill="both", expand=True)
 
-        controls_panel = tk.Frame(container, bg="#050b16", bd=0, relief="flat")
-        controls_panel.grid(row=0, column=1, sticky="nsew")
-
-        log_panel = tk.Frame(container, bg="#050b16", bd=0, relief="flat")
-        log_panel.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(24, 0))
+        self._build_client_layout(client_tab)
+        self._build_worker_layout(worker_tab)
+        self._build_log_panel(container)
 
         version_badge = tk.Label(
             self,
@@ -246,10 +280,28 @@ class TurnpointPurgerUI(tk.Tk):
         )
         version_badge.place(relx=1.0, x=-32, y=16, anchor="ne")
 
-        # Visual panel content
+        global_watermark = tk.Label(
+            self,
+            text="(Far)H4n_SOLO • TurnpointPurger // Purging System",
+            fg="#0e1c33",
+            bg=self["bg"],
+            font=("Space Mono", 12, "bold"),
+        )
+        global_watermark.place(relx=1.0, rely=1.0, anchor="se", x=-18, y=-10)
+
+    def _build_client_layout(self, parent):
+        parent.columnconfigure(0, weight=3)
+        parent.columnconfigure(1, weight=2)
+
+        visual_panel = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
+        visual_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 24), pady=(10, 0))
+
+        controls_panel = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
+        controls_panel.grid(row=0, column=1, sticky="nsew", pady=(10, 0))
+
         headline = tk.Label(
             visual_panel,
-            text="TurnpointPurger",
+            text="TurnpointPurger — Clients",
             fg="#f5fbff",
             bg="#050b16",
             font=("Orbitron", 28, "bold"),
@@ -258,7 +310,7 @@ class TurnpointPurgerUI(tk.Tk):
 
         subline = tk.Label(
             visual_panel,
-            text="Zero-trace purging system // Codename: (Far)H4n_SOLO",
+            text="Zero-trace client purging system // Codename: (Far)H4n_SOLO",
             fg="#7cc3ff",
             bg="#050b16",
             font=("Space Mono", 13),
@@ -296,7 +348,6 @@ class TurnpointPurgerUI(tk.Tk):
         )
         status_label.pack(anchor="w", padx=30, pady=(20, 24))
 
-        # Controls panel content
         controls_title = tk.Label(
             controls_panel,
             text="Directive Console",
@@ -389,7 +440,6 @@ class TurnpointPurgerUI(tk.Tk):
         )
         discovery_label.pack(anchor="w", pady=(4, 6))
 
-        # // cooldown entry promotes safer pacing between purges (min 20s)
         tk.Label(
             self.discovery_frame,
             text="Cooldown (sec) – set >=20 to bypass server lockout",
@@ -507,6 +557,9 @@ class TurnpointPurgerUI(tk.Tk):
         )
         self.refresh_table_button.pack(anchor="w", pady=(0, 6), fill="x")
 
+        self.discovery_frame.pack(anchor="w", padx=20, pady=(12, 12), fill="x")
+        self._toggle_discovery_section(self._bundle_buttons_ready())
+
         notes = tk.Label(
             controls_panel,
             text=(
@@ -529,7 +582,7 @@ class TurnpointPurgerUI(tk.Tk):
             bg="#050b16",
             font=("Segoe UI", 12, "bold"),
         )
-        watermark.pack(anchor="e", padx=20, pady=(140, 4))
+        watermark.pack(anchor="e", padx=20, pady=(20, 4))
 
         email_label = tk.Label(
             controls_panel,
@@ -540,7 +593,254 @@ class TurnpointPurgerUI(tk.Tk):
         )
         email_label.pack(anchor="e", padx=20, pady=(0, 12))
 
-        # Log panel
+    def _build_worker_layout(self, parent):
+        parent.columnconfigure(0, weight=3)
+        parent.columnconfigure(1, weight=2)
+
+        visual_panel = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
+        visual_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 24), pady=(10, 0))
+
+        controls_panel = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
+        controls_panel.grid(row=0, column=1, sticky="nsew", pady=(10, 0))
+
+        headline = tk.Label(
+            visual_panel,
+            text="TurnpointPurger — Workers",
+            fg="#f5fbff",
+            bg="#050b16",
+            font=("Orbitron", 28, "bold"),
+        )
+        headline.pack(anchor="w", padx=30, pady=(28, 0))
+
+        subline = tk.Label(
+            visual_panel,
+            text="Care worker purging system // Atlas-driven workflow",
+            fg="#7cc3ff",
+            bg="#050b16",
+            font=("Space Mono", 13),
+        )
+        subline.pack(anchor="w", padx=30, pady=(4, 20))
+
+        self.worker_primary_bar = ttk.Progressbar(
+            visual_panel,
+            style="Neon.Horizontal.TProgressbar",
+            mode="indeterminate",
+            length=420,
+        )
+        self.worker_primary_bar.pack(padx=30, pady=10, anchor="w")
+
+        self.worker_secondary_bar = ttk.Progressbar(
+            visual_panel,
+            style="Ambient.Horizontal.TProgressbar",
+            mode="indeterminate",
+            length=420,
+        )
+        self.worker_secondary_bar.pack(padx=30, pady=6, anchor="w")
+        self.worker_secondary_bar.start(65)
+
+        tk.Label(
+            visual_panel,
+            text="Worker Atlas + purge controls",
+            fg="#6bdcff",
+            bg="#050b16",
+            font=("Space Mono", 12, "bold"),
+        ).pack(anchor="w", padx=30, pady=(10, 6))
+        self._build_worker_atlas(visual_panel)
+
+        status_label = tk.Label(
+            visual_panel,
+            textvariable=self.worker_status_var,
+            fg="#8fc7ff",
+            bg="#050b16",
+            font=("Space Mono", 12),
+            wraplength=460,
+            justify="left",
+        )
+        status_label.pack(anchor="w", padx=30, pady=(20, 24))
+
+        controls_title = tk.Label(
+            controls_panel,
+            text="Worker Console",
+            fg="#f5fbff",
+            bg="#050b16",
+            font=("Space Grotesk", 18, "bold"),
+        )
+        controls_title.pack(anchor="w", padx=20, pady=(24, 4))
+
+        stats_label = tk.Label(
+            controls_panel,
+            textvariable=self.worker_sequence_var,
+            fg="#6bdcff",
+            bg="#050b16",
+            font=("Space Mono", 11),
+        )
+        stats_label.pack(anchor="w", padx=20, pady=(0, 8))
+
+        tk.Label(
+            controls_panel,
+            textvariable=self.credential_display_var,
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 11),
+            wraplength=360,
+            justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 6))
+
+        worker_headless = ttk.Checkbutton(
+            controls_panel,
+            text="Stealth Chrome (headless)",
+            variable=self.headless_var,
+            style="Cyber.TCheckbutton",
+        )
+        worker_headless.pack(anchor="w", padx=20, pady=(4, 12))
+
+        tk.Label(
+            controls_panel,
+            text="Worker ID",
+            fg="#93b5ff",
+            bg="#050b16",
+            font=("Space Mono", 11),
+        ).pack(anchor="w", padx=20)
+        tk.Entry(
+            controls_panel,
+            textvariable=self.worker_id_var,
+            font=("Helvetica", 16, "bold"),
+            fg="#ffffff",
+            bg="#091021",
+            insertbackground="#1de5ff",
+            relief="flat",
+            justify="center",
+            width=18,
+        ).pack(anchor="w", padx=20, pady=(4, 14))
+
+        self.worker_launch_button = ttk.Button(
+            controls_panel,
+            text="Engage Worker Purge",
+            style="Cyber.TButton",
+            command=self._handle_worker_engage,
+        )
+        self.worker_launch_button.pack(anchor="w", padx=20, pady=(4, 10), fill="x")
+
+        self.worker_reset_button = ttk.Button(
+            controls_panel,
+            text="Reset Worker Purge",
+            style="Danger.TButton",
+            command=self._handle_worker_reset,
+        )
+        self.worker_reset_button.pack(anchor="w", padx=20, pady=(0, 10), fill="x")
+
+        discovery = tk.Frame(controls_panel, bg="#050b16")
+        tk.Label(
+            discovery,
+            text="Worker Discovery",
+            fg="#93b5ff",
+            bg="#050b16",
+            font=("Space Mono", 11, "bold"),
+        ).pack(anchor="w", pady=(4, 6))
+
+        self.worker_collect_button = ttk.Button(
+            discovery,
+            text="Collect Worker Manifest",
+            style="Cyber.TButton",
+            command=self._handle_collect_workers,
+        )
+        self.worker_collect_button.pack(anchor="w", pady=(0, 6), fill="x")
+
+        tk.Label(
+            discovery,
+            textvariable=self.worker_manifest_timestamp_var,
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 9),
+        ).pack(anchor="w", pady=(0, 6))
+
+        self.worker_excel_button = ttk.Button(
+            discovery,
+            text="Download Worker Excel",
+            style="Cyber.TButton",
+            command=self._handle_download_workers_excel,
+        )
+        self.worker_excel_button.pack(anchor="w", pady=(0, 6), fill="x")
+
+        ttk.Button(
+            discovery,
+            text="Refresh Worker Atlas",
+            style="Cyber.TButton",
+            command=self._load_worker_manifest_table,
+        ).pack(anchor="w", pady=(0, 6), fill="x")
+
+        self.worker_purge_all_button = ttk.Button(
+            discovery,
+            text="Purge All Workers",
+            style="Danger.TButton",
+            command=self._handle_worker_purge_all,
+        )
+        self.worker_purge_all_button.pack(anchor="w", pady=(0, 6), fill="x")
+
+        tk.Label(
+            discovery,
+            text="Cooldown (sec) – set >=20 for purge-all pacing",
+            fg="#b3c4ff",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        ).pack(anchor="w", pady=(2, 2))
+        tk.Entry(
+            discovery,
+            textvariable=self.worker_cooldown_seconds_var,
+            font=("JetBrains Mono", 12),
+            bg="#0a1324",
+            fg="#e9f2ff",
+            insertbackground="#18e0ff",
+            relief="flat",
+            width=10,
+        ).pack(anchor="w", pady=(0, 6))
+
+        self.worker_cooldown_bar = ttk.Progressbar(
+            discovery,
+            mode="determinate",
+            length=320,
+            maximum=self.worker_cooldown_seconds,
+            style="Ambient.Horizontal.TProgressbar",
+        )
+        self.worker_cooldown_bar.pack(anchor="w", pady=(0, 6), fill="x")
+
+        tk.Label(
+            discovery,
+            textvariable=self.worker_cooldown_label_var,
+            fg="#f7c6c6",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        ).pack(anchor="w", pady=(0, 2))
+
+        self.worker_force_button = ttk.Button(
+            discovery,
+            text="Override cooldown / Force next worker",
+            style="Danger.TButton",
+            command=self._force_worker_cooldown,
+        )
+        self.worker_force_button.pack(anchor="w", pady=(0, 6), fill="x")
+        self.worker_force_button.configure(state="disabled")
+
+        discovery.pack(anchor="w", padx=20, pady=(8, 12), fill="x")
+
+        notes = tk.Label(
+            controls_panel,
+            text=(
+                "Worker purging uses the same credentials and headless flag. "
+                "The Worker Atlas mirrors the manifest and marks purged IDs in red."
+            ),
+            fg="#7e8fb8",
+            bg="#050b16",
+            font=("Space Mono", 10),
+            wraplength=340,
+            justify="left",
+        )
+        notes.pack(anchor="w", padx=20, pady=(8, 12))
+
+    def _build_log_panel(self, parent):
+        log_panel = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
+        log_panel.pack(fill="both", expand=True, pady=(24, 0))
+
         log_title = tk.Label(
             log_panel,
             text="Purge Feed // Live Ops Log",
@@ -572,15 +872,6 @@ class TurnpointPurgerUI(tk.Tk):
             justify="left",
         )
         signature.pack(anchor="w", padx=20, pady=(0, 12))
-
-        global_watermark = tk.Label(
-            self,
-            text="(Far)H4n_SOLO • TurnpointPurger // Purging System",
-            fg="#0e1c33",
-            bg=self["bg"],
-            font=("Space Mono", 12, "bold"),
-        )
-        global_watermark.place(relx=1.0, rely=1.0, anchor="se", x=-18, y=-10)
 
     def _build_artwork_section(self, parent):
         art_frame = tk.Frame(parent, bg="#050b16")
@@ -709,6 +1000,69 @@ class TurnpointPurgerUI(tk.Tk):
         self.cooldown_label_var.set("Cooldown overridden - forcing next client")
         self._cancel_cooldown_timer()
 
+    def _cancel_worker_cooldown_timer(self):
+        if self._worker_cooldown_job:
+            self.after_cancel(self._worker_cooldown_job)
+            self._worker_cooldown_job = None
+        if self.worker_force_button:
+            self.worker_force_button.configure(state="disabled")
+
+    def _start_worker_cooldown_timer(self, seconds):
+        if not self.worker_cooldown_bar:
+            return
+        self.worker_cooldown_seconds = seconds
+        self.worker_cooldown_override = False
+        self._cancel_worker_cooldown_timer()
+        self.worker_cooldown_bar["maximum"] = seconds
+        self.worker_cooldown_bar["value"] = 0
+        self.worker_cooldown_label_var.set(f"Cooldown: {seconds}s remaining")
+        if self.worker_force_button:
+            self.worker_force_button.configure(state="normal")
+
+        def tick(elapsed):
+            if self.worker_cooldown_override:
+                self.worker_cooldown_bar["value"] = seconds
+                self.worker_cooldown_label_var.set("Cooldown overridden")
+                self._cancel_worker_cooldown_timer()
+                return
+            if elapsed >= seconds:
+                self.worker_cooldown_bar["value"] = seconds
+                self.worker_cooldown_label_var.set("Cooldown complete")
+                self._cancel_worker_cooldown_timer()
+                return
+            self.worker_cooldown_bar["value"] = elapsed
+            remaining = seconds - elapsed
+            self.worker_cooldown_label_var.set(f"Cooldown: {remaining}s remaining")
+            self._worker_cooldown_job = self.after(1000, tick, elapsed + 1)
+
+        self._worker_cooldown_job = self.after(1000, tick, 1)
+
+    def _resolve_worker_cooldown_seconds(self):
+        try:
+            value = int(self.worker_cooldown_seconds_var.get())
+        except ValueError:
+            value = 120
+        if value < 20:
+            value = 20
+            self.worker_cooldown_seconds_var.set(str(value))
+        self.worker_cooldown_seconds = value
+        return value
+
+    def _sleep_with_worker_override(self, seconds):
+        self.worker_cooldown_override = False
+        for _ in range(seconds):
+            if self.worker_cooldown_override:
+                break
+            time.sleep(1)
+        self.worker_cooldown_override = False
+
+    def _force_worker_cooldown(self):
+        if not self._worker_cooldown_job:
+            return
+        self.worker_cooldown_override = True
+        self.worker_cooldown_label_var.set("Cooldown overridden - forcing next worker")
+        self._cancel_worker_cooldown_timer()
+
     def _update_manifest_timestamp(self):
         manifest = Path(self.manifest_path)
         if manifest.exists():
@@ -716,6 +1070,14 @@ class TurnpointPurgerUI(tk.Tk):
             self.manifest_timestamp_var.set(f"Manifest updated: {ts}")
         else:
             self.manifest_timestamp_var.set("Manifest not generated")
+
+    def _update_worker_manifest_timestamp(self):
+        manifest = Path(self.worker_manifest_path)
+        if manifest.exists():
+            ts = datetime.fromtimestamp(manifest.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            self.worker_manifest_timestamp_var.set(f"Worker manifest updated: {ts}")
+        else:
+            self.worker_manifest_timestamp_var.set("Worker manifest not generated")
 
     def _build_client_atlas(self, parent):
         atlas_frame = tk.Frame(parent, bg="#050b16")
@@ -784,6 +1146,73 @@ class TurnpointPurgerUI(tk.Tk):
         self.atlas_tree = tree
         self._load_manifest_table()
 
+    def _build_worker_atlas(self, parent):
+        atlas_frame = tk.Frame(parent, bg="#050b16")
+        atlas_frame.pack(fill="both", expand=True, padx=20, pady=(10, 10))
+        title = tk.Label(
+            atlas_frame,
+            text="Worker Atlas",
+            fg="#f5fbff",
+            bg="#050b16",
+            font=("Space Grotesk", 16, "bold"),
+        )
+        title.pack(anchor="w", pady=(0, 4))
+
+        status = tk.Label(
+            atlas_frame,
+            textvariable=self.worker_atlas_status_var,
+            fg="#7ecdf3",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        )
+        status.pack(anchor="w", pady=(0, 6))
+
+        tree_container = tk.Frame(atlas_frame, bg="#050b16")
+        tree_container.pack(fill="both", expand=True)
+
+        columns = ("order", "worker_id", "full_name", "team")
+        atlas_style = ttk.Style(self)
+        atlas_style.configure(
+            "WorkerAtlas.Treeview",
+            background="#0d1424",
+            fieldbackground="#0d1424",
+            foreground="#dbe7ff",
+            rowheight=26,
+            bordercolor="#0d1424",
+            borderwidth=0,
+        )
+        atlas_style.map(
+            "WorkerAtlas.Treeview",
+            background=[("selected", "#1f3554")],
+            foreground=[("selected", "#fefcf5")],
+        )
+        tree = ttk.Treeview(
+            tree_container,
+            columns=columns,
+            show="headings",
+            height=12,
+            style="WorkerAtlas.Treeview",
+        )
+        tree.heading("order", text="#", anchor="center")
+        tree.heading("worker_id", text="Worker ID", anchor="center")
+        tree.heading("full_name", text="Full Name", anchor="w")
+        tree.heading("team", text="Team", anchor="w")
+        tree.column("order", width=60, anchor="center")
+        tree.column("worker_id", width=120, anchor="center")
+        tree.column("full_name", width=280, anchor="w")
+        tree.column("team", width=260, anchor="w")
+
+        scrollbar = ttk.Scrollbar(tree_container, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        tree.tag_configure("pending", background="#1b2d16", foreground="#f9f5c8")
+        tree.tag_configure("purged", background="#471524", foreground="#ffc2d3")
+
+        self.worker_atlas_tree = tree
+        self._load_worker_manifest_table()
+
     def _load_manifest_table(self):
         if not self.atlas_tree:
             return
@@ -829,6 +1258,57 @@ class TurnpointPurgerUI(tk.Tk):
             f"Atlas loaded: {manifest_clients} client(s). Purged: {purged_count}."
         )
         self._update_manifest_timestamp()
+
+    def _load_worker_manifest_table(self):
+        if not self.worker_atlas_tree:
+            return
+        manifest = Path(self.worker_manifest_path)
+        if not manifest.exists():
+            for item in self.worker_atlas_tree.get_children():
+                self.worker_atlas_tree.delete(item)
+            self.worker_atlas_status_var.set(
+                "Worker manifest not found. Collect worker manifest first."
+            )
+            self._update_worker_manifest_timestamp()
+            return
+        try:
+            with manifest.open("r", newline="", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                rows = list(reader)
+        except Exception as exc:
+            for item in self.worker_atlas_tree.get_children():
+                self.worker_atlas_tree.delete(item)
+            self.worker_atlas_status_var.set(f"Failed to read worker manifest: {exc}")
+            return
+
+        for item in self.worker_atlas_tree.get_children():
+            self.worker_atlas_tree.delete(item)
+        manifest_workers = 0
+        purged_ids = set()
+        purged_count = 0
+        try:
+            stats = get_worker_statistics()
+            workers = (stats or {}).get("workers") or {}
+            purged_ids = {str(cid) for cid in workers.keys()}
+        except Exception:
+            purged_ids = set()
+
+        for row in rows:
+            order = row.get("Order") or row.get("order") or ""
+            worker_id = (row.get("Worker ID") or row.get("worker_id") or "").strip()
+            full_name = row.get("Full Name") or row.get("full_name") or ""
+            team = row.get("Team") or row.get("team") or ""
+            tag = "purged" if worker_id and worker_id in purged_ids else "pending"
+            if tag == "purged":
+                purged_count += 1
+            values = (order, worker_id, full_name, team)
+            self.worker_atlas_tree.insert("", "end", values=values, tags=(tag,))
+            manifest_workers += 1
+
+        self.worker_atlas_status_var.set(
+            f"Worker atlas loaded: {manifest_workers} worker(s). Purged: {purged_count}."
+        )
+        self._update_worker_manifest_timestamp()
 
     def _load_profile_animation(self):
         gif_path = ASSETS_DIR / "maindp.gif"
@@ -1039,6 +1519,7 @@ class TurnpointPurgerUI(tk.Tk):
 
     def _run_button_task(self, button, worker):
         if button is None:
+            threading.Thread(target=worker, daemon=True).start()
             return
         button.configure(state="disabled")
 
@@ -1206,6 +1687,28 @@ class TurnpointPurgerUI(tk.Tk):
                 )
         return entries
 
+    def _read_worker_manifest_entries(self):
+        manifest = Path(self.worker_manifest_path)
+        if not manifest.exists():
+            raise FileNotFoundError(
+                f"Worker manifest not found at {manifest}. Collect worker manifest first."
+            )
+        entries = []
+        with manifest.open("r", newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                worker_id = (row.get("Worker ID") or row.get("worker_id") or "").strip()
+                if not worker_id:
+                    continue
+                entries.append(
+                    {
+                        "worker_id": worker_id,
+                        "full_name": row.get("Full Name") or row.get("full_name") or "",
+                        "team": row.get("Team") or row.get("team") or "",
+                    }
+                )
+        return entries
+
     def _handle_purge_all_clients(self):
         if self.is_running:
             messagebox.showwarning(
@@ -1292,6 +1795,176 @@ class TurnpointPurgerUI(tk.Tk):
 
         threading.Thread(target=task, daemon=True).start()
 
+    def _handle_collect_workers(self):
+        def task():
+            try:
+                result = collect_workers(headless=self.headless_var.get())
+                manifest_path = Path(result.get("manifest_path", WORKER_MANIFEST_PATH))
+                self.worker_manifest_path = manifest_path
+                count = result.get("count", 0)
+                message = (
+                    f"Worker manifest collected: {count} worker(s).\n"
+                    f"Manifest saved at:\n{manifest_path}"
+                )
+                self._enqueue_log(self._timestamp(message))
+                self.after(0, self._load_worker_manifest_table)
+                self.after(0, self._update_worker_manifest_timestamp)
+                self.after(0, lambda: messagebox.showinfo("TurnpointPurger", message))
+            except Exception as exc:
+                error = f"Worker manifest collection failed: {exc}"
+                self._enqueue_log(self._timestamp(error))
+                self.after(0, lambda: messagebox.showerror("TurnpointPurger", error))
+
+        self._run_button_task(self.worker_collect_button, task)
+
+    def _handle_download_workers_excel(self):
+        def task():
+            try:
+                path = download_worker_excel(headless=self.headless_var.get())
+                message = (
+                    f"Worker Excel snapshot downloaded:\n{path}\n"
+                    "Use Refresh Worker Atlas after generating the manifest."
+                )
+                self._enqueue_log(self._timestamp(message))
+                self.after(0, lambda: messagebox.showinfo("TurnpointPurger", message))
+            except Exception as exc:
+                error = f"Worker Excel download failed: {exc}"
+                self._enqueue_log(self._timestamp(error))
+                self.after(0, lambda: messagebox.showerror("TurnpointPurger", error))
+
+        self._run_button_task(self.worker_excel_button, task)
+
+    def _handle_worker_engage(self):
+        if self.is_running:
+            return
+        worker_id = self.worker_id_var.get().strip()
+        if not worker_id:
+            messagebox.showerror(
+                "TurnpointPurger", "Worker ID is required to engage the purge."
+            )
+            return
+        self._enqueue_log(self._timestamp("Worker directive accepted. Spooling up..."))
+        self.worker_status_var.set(f"Purging system engaged for worker {worker_id}.")
+        self._set_worker_running(True)
+        threading.Thread(
+            target=self._execute_worker_purge, args=(worker_id,), daemon=True
+        ).start()
+
+    def _handle_worker_reset(self):
+        if self.is_running:
+            messagebox.showwarning(
+                "TurnpointPurger",
+                "Pause the active purge before resetting the worker archives.",
+            )
+            return
+        confirm = messagebox.askyesno(
+            "Reset Worker Purge",
+            "This will delete every PurgedWorker archive and reset worker counters.\nProceed?",
+            icon="warning",
+        )
+        if not confirm:
+            return
+        try:
+            reset_worker_data()
+            if self.worker_manifest_path and Path(self.worker_manifest_path).exists():
+                Path(self.worker_manifest_path).unlink(missing_ok=True)
+            self._load_worker_manifest_table()
+            notice = self._timestamp("Worker purge archives wiped. Counters restored.")
+            self._enqueue_log(notice)
+            self.worker_status_var.set("Worker archive reset. Awaiting new directives.")
+            messagebox.showinfo(
+                "TurnpointPurger",
+                "Worker archives and counters have been reset.",
+            )
+            self._refresh_worker_sequence_stats()
+        except Exception as exc:
+            messagebox.showerror(
+                "TurnpointPurger",
+                f"Reset failed:\n{exc}",
+            )
+
+    def _handle_worker_purge_all(self):
+        if self.is_running:
+            messagebox.showwarning(
+                "TurnpointPurger",
+                "Finish the current purge before running the worker purge-all cycle.",
+            )
+            return
+
+        confirm = messagebox.askyesno(
+            "Purge All Workers",
+            "This will sequentially purge every worker in the manifest. Continue?",
+            icon="warning",
+        )
+        if not confirm:
+            return
+
+        try:
+            entries = self._read_worker_manifest_entries()
+        except Exception as exc:
+            messagebox.showerror("TurnpointPurger", str(exc))
+            return
+        if not entries:
+            messagebox.showinfo(
+                "TurnpointPurger",
+                "Worker manifest is empty. Generate the manifest before purging.",
+            )
+            return
+
+        cooldown_seconds = self._resolve_worker_cooldown_seconds()
+
+        def task():
+            self._set_worker_running(True)
+            completed = failed = 0
+            total = len(entries)
+            for index, entry in enumerate(entries, start=1):
+                worker_id = entry["worker_id"]
+                worker_name = entry.get("full_name") or None
+                try:
+                    self._enqueue_log(
+                        self._timestamp(
+                            f"[Worker Purge All] ({index}/{total}) Engaging worker {worker_id}"
+                        )
+                    )
+                    run_worker_purge(
+                        worker_id,
+                        worker_name=worker_name,
+                        headless=self.headless_var.get(),
+                    )
+                    completed += 1
+                except RuntimeError as exc:
+                    self._enqueue_log(self._timestamp(f"[Worker Purge All] Skipped: {exc}"))
+                except Exception as exc:
+                    failed += 1
+                    self._enqueue_log(
+                        self._timestamp(f"[Worker Purge All] Error on {worker_id}: {exc}")
+                    )
+                finally:
+                    self.after(0, self._load_worker_manifest_table)
+                    self.after(0, self._refresh_worker_sequence_stats)
+
+                if index < total and cooldown_seconds > 0:
+                    self.after(
+                        0, lambda s=cooldown_seconds: self._start_worker_cooldown_timer(s)
+                    )
+                    self._sleep_with_worker_override(cooldown_seconds)
+                    self.after(0, self._cancel_worker_cooldown_timer)
+                    self.after(0, lambda: self.worker_cooldown_label_var.set("Cooldown idle"))
+
+            self.after(0, self._cancel_worker_cooldown_timer)
+            self.after(0, lambda: self.worker_cooldown_bar.configure(value=0))
+            self.after(0, lambda: self.worker_cooldown_label_var.set("Cooldown idle"))
+            summary = (
+                f"Worker purge-all finished: {completed} completed, {failed} failed/duplicates."
+            )
+            self._enqueue_log(self._timestamp(summary))
+            self.after(0, self._load_worker_manifest_table)
+            self.after(0, self._refresh_worker_sequence_stats)
+            self.after(0, lambda: messagebox.showinfo("TurnpointPurger", summary))
+            self.after(0, lambda: self._set_worker_running(False))
+
+        self._run_button_task(self.worker_purge_all_button, task)
+
     def _handle_find_purgeable_clients(self):
         def task():
             try:
@@ -1336,6 +2009,19 @@ class TurnpointPurgerUI(tk.Tk):
             self._enqueue_log(self._timestamp(f"Purging failure: {exc}"))
             self._notify_completion(success=False, error=str(exc))
 
+    def _execute_worker_purge(self, worker_id):
+        try:
+            output_dir = run_worker_purge(worker_id, headless=self.headless_var.get())
+            self._enqueue_log(
+                self._timestamp(
+                    f"Worker purge finished. Output archived @ {output_dir}"
+                )
+            )
+            self._notify_worker_completion(success=True, output=str(output_dir))
+        except Exception as exc:
+            self._enqueue_log(self._timestamp(f"Worker purge failure: {exc}"))
+            self._notify_worker_completion(success=False, error=str(exc))
+
     def _notify_completion(self, success, output=None, error=None):
         def finalize():
             self._set_running(False)
@@ -1355,6 +2041,25 @@ class TurnpointPurgerUI(tk.Tk):
 
         self.after(0, finalize)
 
+    def _notify_worker_completion(self, success, output=None, error=None):
+        def finalize():
+            self._set_worker_running(False)
+            if success:
+                self.worker_status_var.set(f"Worker purging complete. Payload stored at {output}")
+                messagebox.showinfo(
+                    "TurnpointPurger",
+                    f"Worker purge complete.\n\nFiles stored at:\n{output}",
+                )
+            else:
+                self.worker_status_var.set("Worker purging aborted. Inspect logs for anomalies.")
+                messagebox.showerror(
+                    "TurnpointPurger",
+                    f"Worker purging failed.\n\n{error}",
+                )
+            self._refresh_worker_sequence_stats()
+
+        self.after(0, finalize)
+
     def _set_running(self, running):
         self.is_running = running
         if running:
@@ -1366,6 +2071,18 @@ class TurnpointPurgerUI(tk.Tk):
             self.secondary_bar.stop()
             self.secondary_bar.start(65)
             self.launch_button.configure(text="Engage Purge", state="normal")
+
+    def _set_worker_running(self, running):
+        self.is_running = running
+        if running:
+            self.worker_primary_bar.start(12)
+            self.worker_secondary_bar.start(40)
+            self.worker_launch_button.configure(text="Purging…", state="disabled")
+        else:
+            self.worker_primary_bar.stop()
+            self.worker_secondary_bar.stop()
+            self.worker_secondary_bar.start(65)
+            self.worker_launch_button.configure(text="Engage Worker Purge", state="normal")
 
     def _timestamp(self, text):
         stamp = datetime.now().strftime("[%H:%M:%S]")
@@ -1390,6 +2107,20 @@ class TurnpointPurgerUI(tk.Tk):
         else:
             text = "Sequence tracker offline"
         self.sequence_var.set(text)
+
+    def _refresh_worker_sequence_stats(self):
+        try:
+            stats = get_worker_statistics()
+        except Exception:
+            stats = None
+        if stats:
+            text = (
+                f"Next Worker Sequence: {stats['next_universal_id']}    "
+                f"Purged: {stats['purged_count']}"
+            )
+        else:
+            text = "Worker sequence tracker offline"
+        self.worker_sequence_var.set(text)
 
     def _refresh_credential_display(self):
         username = self.credential_username or "(not set)"

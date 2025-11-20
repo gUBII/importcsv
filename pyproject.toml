@@ -23,4 +23,11 @@ turnpoint-purger-gui = "turnpoint_purger_ui:launch_ui"
 turnpoint-budgeter = "NDISBUDGETER:generate_budget_exports"
 
 [tool.setuptools]
-py-modules = ["importcsv", "turnpoint_purger_ui", "NDISBUDGETER", "purger_state"]
+py-modules = [
+    "importcsv",
+    "turnpoint_purger_ui",
+    "NDISBUDGETER",
+    "purger_state",
+    "worker_purger",
+    "worker_state",
+]
