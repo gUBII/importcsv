@@ -58,6 +58,11 @@ def sanitize_component(value, fallback="Worker"):
     return safe or fallback
 
 
+def _format_folder_name(worker_id, worker_name):
+    safe_name = sanitize_component(worker_name or "Worker")
+    return f"{FILE_PREFIX}{safe_name} {worker_id}"
+
+
 def ensure_worker_root():
     ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -121,10 +126,8 @@ def configure_worker_context(worker_id, worker_name=None):
     ensure_worker_root()
     OUTPUT_DIR = (ARCHIVE_ROOT / f"{FILE_PREFIX}{worker_id}").resolve()
     DOCUMENTS_DIR = OUTPUT_DIR / f"{WORKER_UNIVERSAL_ID} Documents"
-    candidate_name = worker_name or "Worker"
-    FINAL_OUTPUT_DIR = (
-        ARCHIVE_ROOT / f"{FILE_PREFIX}{candidate_name} ({worker_id})"
-    ).resolve()
+    initial_name = worker_name or "Worker"
+    FINAL_OUTPUT_DIR = (ARCHIVE_ROOT / _format_folder_name(worker_id, initial_name)).resolve()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -132,7 +135,7 @@ def configure_worker_context(worker_id, worker_name=None):
 def update_final_worker_name(worker_id, new_name):
     global FINAL_OUTPUT_DIR
     cleaned = normalize_label(new_name or "") or "Worker"
-    FINAL_OUTPUT_DIR = (ARCHIVE_ROOT / f"{FILE_PREFIX}{cleaned} ({worker_id})").resolve()
+    FINAL_OUTPUT_DIR = (ARCHIVE_ROOT / _format_folder_name(worker_id, cleaned)).resolve()
 
 
 def finalize_output_directory():
@@ -201,6 +204,17 @@ def _set_record_limit(driver, limit=DEFAULT_RECORD_LIMIT):
             return True
         except Exception:
             continue
+    # force-set via JavaScript when option not present
+    try:
+        driver.execute_script(
+            "arguments[0].value=arguments[1]; arguments[0].dispatchEvent(new Event('change'));",
+            select_elem,
+            str(limit),
+        )
+        log_message(f"Worker page size forced to {limit} via script.")
+        return True
+    except Exception:
+        pass
     log_message("Unable to adjust worker page size; continuing with default.")
     return False
 
@@ -215,6 +229,7 @@ def _open_search_options(driver):
         try:
             btn = driver.find_element(By.XPATH, xpath)
             driver.execute_script("arguments[0].click();", btn)
+            time.sleep(0.4)
             return True
         except Exception:
             continue
@@ -382,58 +397,78 @@ def download_worker_excel(headless=False, limit=DEFAULT_RECORD_LIMIT):
 
 
 def _extract_form_fields(driver):
+    """
+    Scrape form inputs/selects/textareas in read-only fashion, pairing values to the
+    nearest label (or name/id when labels are absent). Captures select text and checkbox state.
+    """
     fields: Dict[str, str] = {}
-    checkboxes: Dict[str, bool] = {}
+    checks: Dict[str, bool] = {}
 
-    def store_value(key, value):
-        if not key:
+    def register_value(label, value):
+        label = normalize_label(label)
+        if not label:
             return
-        key = normalize_label(key)
-        if not value:
-            value = ""
-        if key in fields:
+        if label in fields:
             suffix = 2
-            new_key = f"{key} ({suffix})"
-            while new_key in fields:
+            candidate = f"{label} ({suffix})"
+            while candidate in fields:
                 suffix += 1
-                new_key = f"{key} ({suffix})"
-            fields[new_key] = value
+                candidate = f"{label} ({suffix})"
+            fields[candidate] = value or ""
         else:
-            fields[key] = value
+            fields[label] = value or ""
 
-    labels = driver.find_elements(
-        By.XPATH,
-        "//label | //td[@class='label'] | //td[contains(@class,'infobox_leftcol')] | "
-        "//th | //div[@class='colTitle']",
-    )
-    for label in labels:
-        header_text = label.text.strip()
-        if not header_text:
-            continue
-        header_text = normalize_label(header_text)
+    def lookup_label(elem):
+        elem_id = elem.get_attribute("id") or ""
+        elem_name = elem.get_attribute("name") or ""
+        if elem_id:
+            try:
+                lab = driver.find_element(By.XPATH, f"//label[@for='{elem_id}']")
+                if lab.text.strip():
+                    return lab.text.strip()
+            except Exception:
+                pass
+        # walk up to nearest row/cell and use the first text cell as label fallback
         try:
-            parent = label.find_element(By.XPATH, "..")
-            inputs = parent.find_elements(By.XPATH, ".//input|.//textarea|.//select")
-            if inputs:
-                first = inputs[0]
-                input_type = (first.get_attribute("type") or "").lower()
-                if input_type == "checkbox":
-                    checkboxes[header_text] = first.is_selected()
-                    for extra in inputs[1:]:
-                        etype = (extra.get_attribute("type") or "").lower()
-                        if etype in ("text", "date"):
-                            store_value(f"{header_text} Date", extra.get_attribute("value") or extra.text)
-                elif first.tag_name == "select":
-                    selected = first.find_element(By.XPATH, "./option[@selected]")
-                    store_value(header_text, selected.text.strip())
+            row = elem.find_element(By.XPATH, "./ancestor::tr[1]")
+            cells = row.find_elements(By.XPATH, "./th|./td")
+            if cells:
+                for cell in cells:
+                    txt = cell.text.strip()
+                    if txt and cell != cells[-1]:
+                        return txt
+        except Exception:
+            pass
+        placeholder = elem.get_attribute("placeholder") or ""
+        if placeholder.strip():
+            return placeholder.strip()
+        if elem_name.strip():
+            return elem_name.strip()
+        if elem_id.strip():
+            return elem_id.strip()
+        return ""
+
+    inputs = driver.find_elements(By.XPATH, "//input|//select|//textarea")
+    for elem in inputs:
+        tag = elem.tag_name.lower()
+        input_type = (elem.get_attribute("type") or "").lower()
+        label = lookup_label(elem)
+        if not label:
+            continue
+        try:
+            if tag == "select":
+                selected = elem.find_elements(By.XPATH, "./option[@selected]")
+                if selected:
+                    register_value(label, selected[0].text.strip())
                 else:
-                    store_value(header_text, (first.get_attribute("value") or first.text).strip())
+                    register_value(label, elem.get_attribute("value") or "")
+            elif input_type == "checkbox":
+                checks[label] = elem.is_selected()
             else:
-                sibling_text = parent.text.replace(label.text, "").strip()
-                store_value(header_text, sibling_text)
+                register_value(label, (elem.get_attribute("value") or elem.text or "").strip())
         except Exception:
             continue
-    return fields, checkboxes
+    return fields, checks
 
 
 QUALIFICATIONS: List[Tuple[str, str]] = [
@@ -476,17 +511,19 @@ ALLOWANCES = [
 ]
 
 
-def _pick_value(data, *keys):
-    for key in keys:
-        if key in data and data[key]:
-            return data[key]
+def _pick_value(data, aliases: List[str]):
+    lowered = {k.lower(): v for k, v in data.items()}
+    for key in aliases:
+        if key.lower() in lowered and lowered[key.lower()]:
+            return lowered[key.lower()]
     return ""
 
 
-def _pick_yes_no(checks, *keys):
-    for key in keys:
-        if key in checks:
-            return "Yes" if checks[key] else "No"
+def _pick_yes_no(checks, aliases: List[str]):
+    lowered = {k.lower(): v for k, v in checks.items()}
+    for key in aliases:
+        if key.lower() in lowered:
+            return "Yes" if lowered[key.lower()] else "No"
     return ""
 
 
@@ -495,53 +532,53 @@ def _normalize_date(text):
 
 
 def _build_worker_payload(fields, checks, worker_id, provided_name=None):
-    first = _pick_value(fields, "First Name", "First name")
-    last = _pick_value(fields, "Surname", "Last Name")
+    first = _pick_value(fields, ["First Name", "First name", "fname", "first_name"])
+    last = _pick_value(fields, ["Surname", "Last Name", "lname", "last_name"])
     full_name = provided_name or " ".join(part for part in [first, last] if part).strip()
 
     data = {
         "Worker ID": worker_id,
-        "Title": _pick_value(fields, "Title"),
+        "Title": _pick_value(fields, ["Title"]),
         "First Name": first,
         "Surname": last,
-        "Gender": _pick_value(fields, "Gender"),
-        "Email": _pick_value(fields, "Email"),
-        "User Level": _pick_value(fields, "User Level"),
-        "Pay Group": _pick_value(fields, "Pay Group"),
-        "Pay Level": _pick_value(fields, "Pay level", "Pay Level"),
-        "Team": _pick_value(fields, "Team"),
-        "Accounting System Reference": _pick_value(fields, "Accounting System Reference"),
-        "ABN / Contractor Number": _pick_value(fields, "ABN / Contractor Number", "ABN / Contractor Number"),
-        "Case Manager Account": _pick_yes_no(checks, "Case Manager Account", "Case Manager"),
-        "Language Spoken": _pick_value(fields, "Languages Spoken", "Language Spoken"),
-        "Address": _pick_value(fields, "Address"),
-        "Suburb": _pick_value(fields, "Suburb"),
-        "Postcode": _pick_value(fields, "Postcode"),
-        "State": _pick_value(fields, "State"),
-        "Landline": _pick_value(fields, "Landline", "Phone"),
-        "Mobile": _pick_value(fields, "Mobile"),
-        "Emergency Contact Name": _pick_value(fields, "Emergency Contact Name"),
-        "Emergency Contact Phone": _pick_value(fields, "Emergency Contact Phone"),
-        "Notify SMS": _pick_yes_no(checks, "Notify SMS"),
-        "Notify Email": _pick_yes_no(checks, "Notify Email"),
-        "Get Roster Notifications": _pick_yes_no(checks, "Get Roster Notifications"),
-        "Date of Birth": _normalize_date(_pick_value(fields, "Date of Birth")),
-        "Notes": _pick_value(fields, "Notes"),
-        "Rostering Notes": _pick_value(fields, "Rostering Notes"),
-        "Ignore Conflicts": _pick_yes_no(checks, "Ignore Conflicts"),
-        "Ignore Award Alerts": _pick_yes_no(checks, "Ignore Award Alerts"),
-        "Care Worker": _pick_yes_no(checks, "Care Worker"),
-        "System-Only User": _pick_yes_no(checks, "System-Only User"),
-        "Enable GPS Tracking": _pick_yes_no(checks, "Enable GPS Tracking"),
-        "Mobile PIN Required": _pick_yes_no(checks, "Mobile PIN Required"),
-        "Mobile PIN": _pick_value(fields, "Mobile PIN"),
-        "Travel Pay Settings": _pick_value(fields, "Travel Pay Settings"),
-        "Min Hours Per week": _pick_value(fields, "Min Hours Per week"),
-        "Max Hours Per Week": _pick_value(fields, "Max Hours Per Week"),
-        "Employment Start Date": _normalize_date(_pick_value(fields, "Employment Start Date")),
-        "Employment End Date": _normalize_date(_pick_value(fields, "Employment End Date")),
-        "Work sites / Location": _pick_yes_no(checks, "Work sites / Location"),
-        "Geographic Region": _pick_value(fields, "Geographic Region"),
+        "Gender": _pick_value(fields, ["Gender"]),
+        "Email": _pick_value(fields, ["Email"]),
+        "User Level": _pick_value(fields, ["User Level", "User level"]),
+        "Pay Group": _pick_value(fields, ["Pay Group", "Pay group"]),
+        "Pay Level": _pick_value(fields, ["Pay level", "Pay Level", "Paylevel"]),
+        "Team": _pick_value(fields, ["Team"]),
+        "Accounting System Reference": _pick_value(fields, ["Accounting System Reference", "Accounting Reference"]),
+        "ABN / Contractor Number": _pick_value(fields, ["ABN / Contractor Number", "ABN", "Contractor Number"]),
+        "Case Manager Account": _pick_yes_no(checks, ["Case Manager Account", "Case Manager"]),
+        "Language Spoken": _pick_value(fields, ["Languages Spoken", "Language Spoken"]),
+        "Address": _pick_value(fields, ["Address"]),
+        "Suburb": _pick_value(fields, ["Suburb"]),
+        "Postcode": _pick_value(fields, ["Postcode"]),
+        "State": _pick_value(fields, ["State"]),
+        "Landline": _pick_value(fields, ["Landline", "Phone", "Home Phone"]),
+        "Mobile": _pick_value(fields, ["Mobile", "Mobile Phone"]),
+        "Emergency Contact Name": _pick_value(fields, ["Emergency Contact Name"]),
+        "Emergency Contact Phone": _pick_value(fields, ["Emergency Contact Phone"]),
+        "Notify SMS": _pick_yes_no(checks, ["Notify SMS"]),
+        "Notify Email": _pick_yes_no(checks, ["Notify Email"]),
+        "Get Roster Notifications": _pick_yes_no(checks, ["Get Roster Notifications", "Roster Notifications"]),
+        "Date of Birth": _normalize_date(_pick_value(fields, ["Date of Birth", "DOB"])),
+        "Notes": _pick_value(fields, ["Notes"]),
+        "Rostering Notes": _pick_value(fields, ["Rostering Notes"]),
+        "Ignore Conflicts": _pick_yes_no(checks, ["Ignore Conflicts"]),
+        "Ignore Award Alerts": _pick_yes_no(checks, ["Ignore Award Alerts"]),
+        "Care Worker": _pick_yes_no(checks, ["Care Worker"]),
+        "System-Only User": _pick_yes_no(checks, ["System-Only User"]),
+        "Enable GPS Tracking": _pick_yes_no(checks, ["Enable GPS Tracking"]),
+        "Mobile PIN Required": _pick_yes_no(checks, ["Mobile PIN Required"]),
+        "Mobile PIN": _pick_value(fields, ["Mobile PIN"]),
+        "Travel Pay Settings": _pick_value(fields, ["Travel Pay Settings", "Travel Pay"]),
+        "Min Hours Per week": _pick_value(fields, ["Min Hours Per week", "Min Hours Per Week"]),
+        "Max Hours Per Week": _pick_value(fields, ["Max Hours Per Week"]),
+        "Employment Start Date": _normalize_date(_pick_value(fields, ["Employment Start Date", "Start Date"])),
+        "Employment End Date": _normalize_date(_pick_value(fields, ["Employment End Date", "End Date"])),
+        "Work sites / Location": _pick_yes_no(checks, ["Work sites / Location", "Work sites", "Location"]),
+        "Geographic Region": _pick_value(fields, ["Geographic Region"]),
         "Full Name": full_name,
     }
     return data, full_name
@@ -568,8 +605,8 @@ def _write_csv(filename: Path, records: List[Dict[str, str]]):
 def _write_qualification_csv(prefix_path: Path, fields, checks):
     rows = []
     for label, key in QUALIFICATIONS:
-        tick = _pick_yes_no(checks, label, key)
-        date = _normalize_date(_pick_value(fields, f"{label} Date", f"{key} Date", label))
+        tick = _pick_yes_no(checks, [label, key])
+        date = _normalize_date(_pick_value(fields, [f"{label} Date", f"{key} Date", label]))
         rows.append(
             {
                 "Certification": label,
@@ -586,7 +623,7 @@ def _write_allowance_csv(prefix_path: Path, checks):
         rows.append(
             {
                 "Allowance": label,
-                "Ticked": _pick_yes_no(checks, label),
+                "Ticked": _pick_yes_no(checks, [label]),
             }
         )
     _write_csv(prefix_path / f"{FILE_PREFIX}Allowance.csv", rows)

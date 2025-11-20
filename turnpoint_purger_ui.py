@@ -1283,15 +1283,24 @@ class TurnpointPurgerUI(tk.Tk):
 
         for item in self.worker_atlas_tree.get_children():
             self.worker_atlas_tree.delete(item)
-        manifest_workers = 0
-        purged_ids = set()
-        purged_count = 0
-        try:
-            stats = get_worker_statistics()
-            workers = (stats or {}).get("workers") or {}
-            purged_ids = {str(cid) for cid in workers.keys()}
-        except Exception:
+            manifest_workers = 0
             purged_ids = set()
+            purged_count = 0
+            try:
+                stats = get_worker_statistics()
+                workers = (stats or {}).get("workers") or {}
+                purged_ids = {str(cid) for cid in workers.keys()}
+            except Exception:
+                purged_ids = set()
+
+        # sort by team then name for atlas clarity and purge-all ordering
+        rows = sorted(
+            rows,
+            key=lambda r: (
+                (r.get("Team") or r.get("team") or "").lower(),
+                (r.get("Full Name") or r.get("full_name") or "").lower(),
+            ),
+        )
 
         for row in rows:
             order = row.get("Order") or row.get("order") or ""
