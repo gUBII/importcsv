@@ -2,7 +2,7 @@
 
 ## Title Page
 - **Project:** TurnpointPurger Automation Suite  
-- **Version:** 2.0.1  
+- **Version:** 2.0.2  
 - **Scope:** Python + Selenium stack that automates TurnPoint (tp1.com.au) data extraction, budgeting exports, and archival.
 
 ## Executive Summary

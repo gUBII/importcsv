@@ -2,7 +2,7 @@
 
 ![TurnpointPurger UI](assets/turnpoint_ui_v201.png)
 
-**Version:** 2.0.1 (TurnpointPurger PDCC release)
+**Version:** 2.0.2 (TurnpointPurger PDCC release)
 
 ```
  _____ _    ____   ___   _ _  _   _   ___      ____   ___  _     ___  

@@ -30,7 +30,7 @@ CONTACT_EMAIL = os.getenv("PURGER_CONTACT_EMAIL", "ops@nexix365.com")
 BASE_URL = "https://tp1.com.au/"
 CLIENT_ID = "56851"
 CLIENT_NAME = "KHAIR Adam"
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.0.2"
 CLIENTS_PAGE_URL = f"{BASE_URL.rstrip('/')}/clients.asp?posted=yes"
 ARCHIVE_ROOT = Path(
     os.getenv("PURGED_ARCHIVE_ROOT", str(Path.home() / "PurgedClients"))

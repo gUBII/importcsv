@@ -94,4 +94,4 @@ package "UI Layer" {
 Use any PlantUML renderer to generate the visual diagram.
 
 ---
-*Last updated: {{DATE}} – reflects the PDCC manifest workflow, bundle picker UI, and the corrected purgeable download endpoint.*
+*Last updated: 2.0.2 – reflects the PDCC manifest workflow, bundle picker UI, purge-all cooldown/override, timestamps, and the corrected purgeable download endpoint.*

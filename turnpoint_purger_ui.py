@@ -74,7 +74,7 @@ class TurnpointPurgerUI(tk.Tk):
         self.atlas_tree = None
         self.atlas_status_var = tk.StringVar(value="Client atlas awaiting manifest.")
         self.manifest_path = PACKAGE_MANIFEST_PATH
-        self.cooldown_seconds = 120
+        self.cooldown_seconds = 120  # // default cooldown in seconds
         self.cooldown_seconds_var = tk.StringVar(value="120")
         self.cooldown_bar = None
         self.cooldown_label_var = tk.StringVar(value="Cooldown idle")
@@ -107,6 +107,7 @@ class TurnpointPurgerUI(tk.Tk):
             style.theme_use("clam")
         except tk.TclError:
             pass
+        # // shared progress bar and button styles for the neon UI
 
         style.configure(
             "Neon.Horizontal.TProgressbar",
@@ -388,6 +389,7 @@ class TurnpointPurgerUI(tk.Tk):
         )
         discovery_label.pack(anchor="w", pady=(4, 6))
 
+        # // cooldown entry promotes safer pacing between purges (min 20s)
         tk.Label(
             self.discovery_frame,
             text="Cooldown (sec) – set >=20 to bypass server lockout",
