@@ -21,6 +21,7 @@ from importcsv import (
     normalize_label,
     sanitize_csv_value,
 )
+from selenium_helpers import retry, wait_for, click_js
 from worker_state import (
     reserve_worker_sequence,
     record_worker_event,
@@ -190,7 +191,7 @@ def guard_against_duplicate(worker_id):
 
 def _set_record_limit(driver, limit=DEFAULT_RECORD_LIMIT):
     try:
-        select_elem = driver.find_element(By.NAME, "psize")
+        select_elem = wait_for(driver, By.NAME, "psize", timeout=5)
     except NoSuchElementException:
         log_message("Worker page size selector not found.")
         return False
@@ -228,7 +229,7 @@ def _open_search_options(driver):
     for xpath in selectors:
         try:
             btn = driver.find_element(By.XPATH, xpath)
-            driver.execute_script("arguments[0].click();", btn)
+            click_js(driver, btn)
             time.sleep(0.4)
             return True
         except Exception:
@@ -241,16 +242,22 @@ def _submit_worker_search(driver):
         "//input[@type='submit' and contains(translate(@value,'SEARCH','search'),'search')]",
         "//button[contains(translate(text(),'SEARCH','search'),'search')]",
     ]
-    for xpath in search_selectors:
-        try:
-            button = driver.find_element(By.XPATH, xpath)
-            driver.execute_script("arguments[0].click();", button)
-            log_message("Worker search triggered.")
-            return True
-        except Exception:
-            continue
-    log_message("Worker search button not found.")
-    return False
+    def _attempt_click():
+        for xpath in search_selectors:
+            try:
+                button = driver.find_element(By.XPATH, xpath)
+                click_js(driver, button)
+                log_message("Worker search triggered.")
+                return True
+            except Exception:
+                continue
+        raise RuntimeError("Worker search button not found.")
+
+    try:
+        return retry(_attempt_click, attempts=2, delay=0.5)
+    except Exception:
+        log_message("Worker search button not found.")
+        return False
 
 
 WORKER_LINK_XPATH = "//a[contains(@href,'carer-details.asp') and contains(@href,'eid=')]"
@@ -352,19 +359,22 @@ def collect_workers(headless=False, limit=DEFAULT_RECORD_LIMIT, manifest_path=No
 
 
 def _trigger_excel_download(driver):
-    button = WebDriverWait(driver, 15).until(
-        EC.element_to_be_clickable(
-            (
-                By.XPATH,
-                "//a[contains(translate(text(),'EXCEL','excel'),'excel') or contains(@title,'Excel') "
-                "or contains(@onclick,'generateXL')]"
-                " | //button[contains(translate(text(),'EXCEL','excel'),'excel')]"
-                " | //img[@alt='Excel']/parent::a[contains(@onclick,'generateXL')]",
+    def _find():
+        return WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable(
+                (
+                    By.XPATH,
+                    "//a[contains(translate(text(),'EXCEL','excel'),'excel') or contains(@title,'Excel') "
+                    "or contains(@onclick,'generateXL')]"
+                    " | //button[contains(translate(text(),'EXCEL','excel'),'excel')]"
+                    " | //img[@alt='Excel']/parent::a[contains(@onclick,'generateXL')]",
+                )
             )
         )
-    )
+
+    button = retry(_find, attempts=3, delay=1.0)
     driver.execute_script("arguments[0].scrollIntoView(true);", button)
-    driver.execute_script("arguments[0].click();", button)
+    click_js(driver, button)
 
 
 def download_worker_excel(headless=False, limit=DEFAULT_RECORD_LIMIT):
