@@ -1303,7 +1303,7 @@ class TurnpointPurgerUI(tk.Tk):
         )
 
         for display_index, row in enumerate(rows, start=1):
-            order = row.get("Order") or row.get("order") or str(display_index)
+            order = str(display_index)
             worker_id = (row.get("Worker ID") or row.get("worker_id") or "").strip()
             full_name = row.get("Full Name") or row.get("full_name") or ""
             team = row.get("Team") or row.get("team") or ""
