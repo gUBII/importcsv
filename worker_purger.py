@@ -471,6 +471,13 @@ def _extract_form_fields(driver):
     return fields, checks
 
 
+def _normalize_key(key: str) -> str:
+    if not key:
+        return ""
+    text = normalize_label(key).lower()
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
 QUALIFICATIONS: List[Tuple[str, str]] = [
     ("Police check", "Police check"),
     ("Covid - 19 Vaccination", "Covid - 19 Vaccination"),
@@ -512,18 +519,20 @@ ALLOWANCES = [
 
 
 def _pick_value(data, aliases: List[str]):
-    lowered = {k.lower(): v for k, v in data.items()}
+    normalized = { _normalize_key(k): v for k, v in data.items() if k }
     for key in aliases:
-        if key.lower() in lowered and lowered[key.lower()]:
-            return lowered[key.lower()]
+        token = _normalize_key(key)
+        if token in normalized and normalized[token]:
+            return normalized[token]
     return ""
 
 
 def _pick_yes_no(checks, aliases: List[str]):
-    lowered = {k.lower(): v for k, v in checks.items()}
+    normalized = { _normalize_key(k): v for k, v in checks.items() if k }
     for key in aliases:
-        if key.lower() in lowered:
-            return "Yes" if lowered[key.lower()] else "No"
+        token = _normalize_key(key)
+        if token in normalized:
+            return "Yes" if normalized[token] else "No"
     return ""
 
 
@@ -531,7 +540,7 @@ def _normalize_date(text):
     return (text or "").strip()
 
 
-def _build_worker_payload(fields, checks, worker_id, provided_name=None):
+def _build_worker_payload(fields, checks, worker_id, provided_name=None, worker_team=None):
     first = _pick_value(fields, ["First Name", "First name", "fname", "first_name"])
     last = _pick_value(fields, ["Surname", "Last Name", "lname", "last_name"])
     full_name = provided_name or " ".join(part for part in [first, last] if part).strip()
@@ -546,7 +555,7 @@ def _build_worker_payload(fields, checks, worker_id, provided_name=None):
         "User Level": _pick_value(fields, ["User Level", "User level"]),
         "Pay Group": _pick_value(fields, ["Pay Group", "Pay group"]),
         "Pay Level": _pick_value(fields, ["Pay level", "Pay Level", "Paylevel"]),
-        "Team": _pick_value(fields, ["Team"]),
+        "Team": _pick_value(fields, ["Team", "Teams", "Team(s)"]) or (worker_team or ""),
         "Accounting System Reference": _pick_value(fields, ["Accounting System Reference", "Accounting Reference"]),
         "ABN / Contractor Number": _pick_value(fields, ["ABN / Contractor Number", "ABN", "Contractor Number"]),
         "Case Manager Account": _pick_yes_no(checks, ["Case Manager Account", "Case Manager"]),
@@ -629,7 +638,7 @@ def _write_allowance_csv(prefix_path: Path, checks):
     _write_csv(prefix_path / f"{FILE_PREFIX}Allowance.csv", rows)
 
 
-def run_worker_purge(worker_id, worker_name=None, headless=False):
+def run_worker_purge(worker_id, worker_name=None, worker_team=None, headless=False):
     """
     Execute the extraction flow for a worker ID.
     Duplicate workers are skipped without override.
@@ -661,7 +670,9 @@ def run_worker_purge(worker_id, worker_name=None, headless=False):
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
 
         fields, checks = _extract_form_fields(driver)
-        payload, final_name = _build_worker_payload(fields, checks, worker_id, worker_name)
+        payload, final_name = _build_worker_payload(
+            fields, checks, worker_id, worker_name, worker_team=worker_team
+        )
         update_final_worker_name(worker_id, final_name or worker_name)
         main_csv = OUTPUT_DIR / f"{FILE_PREFIX}WorkerDetail.csv"
         _write_csv(main_csv, [payload])
@@ -741,7 +752,12 @@ def run_worker_batch(entries, *, headless=False):
         worker_name = entry.get("full_name") or None
         try:
             log_message(f"[Worker] Engaging worker {worker_id} [{entry.get('team')}]")
-            output_dir = run_worker_purge(worker_id, worker_name=worker_name, headless=headless)
+            output_dir = run_worker_purge(
+                worker_id,
+                worker_name=worker_name,
+                worker_team=entry.get("team"),
+                headless=headless,
+            )
             completed.append(
                 {
                     "worker_id": worker_id,

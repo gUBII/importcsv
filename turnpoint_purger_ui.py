@@ -1302,8 +1302,8 @@ class TurnpointPurgerUI(tk.Tk):
             ),
         )
 
-        for row in rows:
-            order = row.get("Order") or row.get("order") or ""
+        for display_index, row in enumerate(rows, start=1):
+            order = row.get("Order") or row.get("order") or str(display_index)
             worker_id = (row.get("Worker ID") or row.get("worker_id") or "").strip()
             full_name = row.get("Full Name") or row.get("full_name") or ""
             team = row.get("Team") or row.get("team") or ""
@@ -1718,6 +1718,25 @@ class TurnpointPurgerUI(tk.Tk):
                 )
         return entries
 
+    def _lookup_worker_manifest_entry(self, worker_id):
+        manifest = Path(self.worker_manifest_path)
+        if not manifest.exists():
+            return {}
+        try:
+            with manifest.open("r", newline="", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                for row in reader:
+                    rid = (row.get("Worker ID") or row.get("worker_id") or "").strip()
+                    if rid == str(worker_id):
+                        return {
+                            "worker_id": rid,
+                            "full_name": row.get("Full Name") or row.get("full_name") or "",
+                            "team": row.get("Team") or row.get("team") or "",
+                        }
+        except Exception:
+            return {}
+        return {}
+
     def _handle_purge_all_clients(self):
         if self.is_running:
             messagebox.showwarning(
@@ -1938,6 +1957,7 @@ class TurnpointPurgerUI(tk.Tk):
                     run_worker_purge(
                         worker_id,
                         worker_name=worker_name,
+                        worker_team=entry.get("team"),
                         headless=self.headless_var.get(),
                     )
                     completed += 1
@@ -2020,7 +2040,15 @@ class TurnpointPurgerUI(tk.Tk):
 
     def _execute_worker_purge(self, worker_id):
         try:
-            output_dir = run_worker_purge(worker_id, headless=self.headless_var.get())
+            metadata = self._lookup_worker_manifest_entry(worker_id)
+            worker_name = metadata.get("full_name") or None
+            worker_team = metadata.get("team") or None
+            output_dir = run_worker_purge(
+                worker_id,
+                worker_name=worker_name,
+                worker_team=worker_team,
+                headless=self.headless_var.get(),
+            )
             self._enqueue_log(
                 self._timestamp(
                     f"Worker purge finished. Output archived @ {output_dir}"
