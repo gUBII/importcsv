@@ -413,6 +413,7 @@ def _extract_form_fields(driver):
     """
     fields: Dict[str, str] = {}
     checks: Dict[str, bool] = {}
+    radio_groups: Dict[str, bool] = {}
 
     def register_value(label, value):
         label = normalize_label(label)
@@ -429,6 +430,9 @@ def _extract_form_fields(driver):
             fields[label] = value or ""
 
     def lookup_label(elem):
+        aria = (elem.get_attribute("aria-label") or "").strip()
+        if aria:
+            return aria
         elem_id = elem.get_attribute("id") or ""
         elem_name = elem.get_attribute("name") or ""
         if elem_id:
@@ -472,12 +476,41 @@ def _extract_form_fields(driver):
                     register_value(label, selected[0].text.strip())
                 else:
                     register_value(label, elem.get_attribute("value") or "")
+            elif input_type == "radio":
+                group_key = _normalize_key(elem.get_attribute("name") or label)
+                if group_key not in radio_groups:
+                    radio_groups[group_key] = None
+                if elem.is_selected():
+                    val = (elem.get_attribute("value") or "").strip().lower()
+                    if val in ("yes", "y", "true", "1"):
+                        radio_groups[group_key] = True
+                    elif val in ("no", "n", "false", "0"):
+                        radio_groups[group_key] = False
+                    else:
+                        radio_groups[group_key] = True
+            elif input_type == "checkbox":
+                checks[label] = elem.is_selected()
             elif input_type == "checkbox":
                 checks[label] = elem.is_selected()
             else:
                 register_value(label, (elem.get_attribute("value") or elem.text or "").strip())
         except Exception:
             continue
+    # fold radio groups into checks
+    for group, state in radio_groups.items():
+        if state is not None:
+            checks[group] = state
+
+    # combine split date fields (e.g., Date of Birth day/month/year selects)
+    dob_parts = []
+    for key, value in fields.items():
+        if _normalize_key(key).startswith("dateofbirth"):
+            if value:
+                dob_parts.append(value.strip())
+    if dob_parts:
+        combined = " ".join(dob_parts)
+        fields["Date of Birth"] = combined
+
     return fields, checks
 
 
@@ -538,11 +571,18 @@ def _pick_value(data, aliases: List[str]):
 
 
 def _pick_yes_no(checks, aliases: List[str]):
-    normalized = { _normalize_key(k): v for k, v in checks.items() if k }
+    normalized = {_normalize_key(k): v for k, v in checks.items() if k}
     for key in aliases:
         token = _normalize_key(key)
         if token in normalized:
-            return "Yes" if normalized[token] else "No"
+            val = normalized[token]
+            if isinstance(val, str):
+                val_l = val.strip().lower()
+                if val_l in ("yes", "true", "1", "y"):
+                    return "Yes"
+                if val_l in ("no", "false", "0", "n"):
+                    return "No"
+            return "Yes" if bool(val) else "No"
     return ""
 
 
