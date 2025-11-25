@@ -4,7 +4,7 @@ This document captures the end-to-end context so future engineers can onboard qu
 
 ## 1. Mission & Operating Context
 - **What it does:** Automates the TurnPoint portal (tp1.com.au) to archive every client artefact (details, schedules, documents, budgets) under sequential “NexisID” folders and exposes a neon Tkinter control surface plus CLI tooling.
-- **Key features:** duplicate guard (`PURGED_CLIENTS` JSON + `_duplicate_reports/`), purgeable dataset collector (downloads the Excel via the new `clients.asp` filter), per-package manifest crawler (`Collect Package Manifest`), bundle exports (Excel + CSV per package under PDCC), NDIS budget parsing (via `NDISBUDGETER.py`), and the Client Atlas (live table showing 270+ clients with purge status colouring).
+- **Key features:** duplicate guard (`PURGED_CLIENTS` JSON + `_duplicate_reports/`), purgeable dataset collector, per-package manifest crawler, bundle exports (Excel + CSV per package under PDCC), NDIS budget parsing (via `NDISBUDGETER.py`), Client Atlas visualisation, and the new NexisUploader tab that converts worker/client archives into Nexis-ready CSV/JSON payloads (with upload automation + CLEANEDFORNEXIS exports).
 - **Data roots:**  
   - `PurgedClients/<NexisID CLIENT>` – per-client CSVs, documents, and budget exports.  
   - `~/Purged Client/Package Divided Client Credential (PDCC)` – global artefacts (latest purgeable Excel, per-package bundles, `package_manifest.csv`, `_downloads/`).  
@@ -34,13 +34,14 @@ This document captures the end-to-end context so future engineers can onboard qu
    - `collect_clients_by_package` loops `clients.asp` with `select[name="fld569"]`, scrapes all `client-details.asp?eid=*`, de-duplicates, and writes `package_manifest.csv`.
 
 ## 4. GUI Flow (TurnpointPurger UI)
-1. **Layout:** Full-screen Tk window with scrollable root. Left column hosts branding, progress bars, the new Client Atlas tree view, and the status text. Right column is the Directive Console + Client Discovery buttons. Bottom area is the log panel.
+1. **Layout:** Full-screen Tk window with scrollable root. Left column hosts branding, progress bars, Client Atlas tree view, and the status text. Right column is the Directive Console + Client Discovery buttons. Bottom area is the log panel plus the NexisUploader action hub.
 2. **Client Atlas:** On load (and refresh) reads `package_manifest.csv`, applies table tags (`pending` = yellow, `purged` = red) by cross-checking `purger_state`. Reset Purge removes the manifest and reloads the atlas (empty).
 3. **Discovery buttons:**  
-   - `Collect Package Manifest` → backend crawler (threaded).  
-   - `Find Purgeable Clients` → downloads the Excel snapshot (using the new URL).  
-   - `Bundle Download / Update` → opens a package picker (All Packages + per-package buttons). Each selection launches `bundle_package_download(packages=[...])` sequentially.  
-   - `Refresh Client Atlas` → simple reload for manual purges.
+   - `Collect Package Manifest` → backend crawler.  
+   - `Find Purgeable Clients` → downloads the Excel snapshot.  
+   - `Bundle Download / Update` → package picker driving `bundle_package_download`.  
+   - `Refresh Client Atlas` → simple reload for manual purges.  
+   - NexisUploader controls (worker/client scan, CLEANEDFORNEXIS export, FormatforClient CSV regeneration, worker upload automation + JSON preview).  
 4. **Purge All Clients:** Reads every client ID from `package_manifest.csv`, purges sequentially, and respects the operator-defined cooldown (entry field defaults to 120 seconds, minimum enforced at 20). The countdown progress bar + override button (“Override cooldown / Force next client”) let ops see/suppress the wait that avoids TurnPoint’s 403 lockout.
 5. **Operational timestamps:** Below the manifest/bundle controls the UI now shows “Manifest updated …” and “Bundle last run …” labels plus an indeterminate bundle progress bar. Operators can prove when the datasets were refreshed and know when the next run completes.
 6. **Purge Loop:** Engage Purge (or Purge All) spawns `run_turnpoint_purge` in a background thread; UI bars animate, log updates, message boxes reflect success/failure, and duplicate attempts bubble a `DuplicateClientError` toast.

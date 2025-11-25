@@ -2,7 +2,7 @@
 
 ![TurnpointPurger UI](assets/turnpoint_ui_v201.png)
 
-**Version:** 2.0.2 (TurnpointPurger PDCC release)
+**Version:** 3.0.1 (NexisUploader release)
 
 ```
  _____ _    ____   ___   _ _  _   _   ___      ____   ___  _     ___  
@@ -13,7 +13,7 @@
                   \_\                  /_/_____|                      
 ```
 
-TurnpointPurger (c) (Far)H4n_SOLO is a cinematic Selenium toolkit that logs into TurnPoint, extracts every client artefact, snapshots linked documents, and repackages everything under the sequential “NexisID” archive (`PurgedClients/10000x …`). It ships with both a CLI and a neon Tkinter UI (TurnpointPurger) that show live logs, a Nexix365 badge, and purge history counters.
+TurnpointPurger (c) (Far)H4n_SOLO is a cinematic Selenium toolkit that logs into TurnPoint, extracts every client artefact, snapshots linked documents, and repackages everything under the sequential “NexisID” archive (`PurgedClients/10000x …`). It ships with both a CLI and a neon Tkinter UI (TurnpointPurger) that show live logs, a Nexix365 badge, purge history counters, and the **NexisUploader** hub for converting purged data into Nexis-ready worker and client payloads.
 
 ## Prerequisites
 
@@ -77,7 +77,8 @@ turnpoint-budgeter       # standalone budget export helper
 - Launches in full-screen (zoomed/maximized) mode and keeps a scrollable layout so the Directive Console, status panels, and log feed stay visible even on smaller displays.
 - Client Discovery controls (Find Purgeable Clients + Bundle Download actions) stay hidden until valid credentials are configured, preventing accidental bundle jobs with empty credentials.
 - Buttons reuse the existing logging/status system so you get toast + log updates as the purgeable dataset or bundles are generated.
-- A new **Client Atlas** panel loads `PDCC/package_manifest.csv`, shows every client (order, ID, name, package) in a tree view, and color-codes rows: yellow for pending, red for already-purged IDs. Use the **Collect Package Manifest** button to crawl all packages from `clients.asp` and regenerate the manifest, then hit **Refresh Client Atlas** to reload or recolor the table.
+- A **Client Atlas** panel loads `PDCC/package_manifest.csv`, shows every client (order, ID, name, package) in a tree view, and color-codes rows: yellow for pending, red for already-purged IDs. Use the **Collect Package Manifest** button to crawl all packages from `clients.asp` and regenerate the manifest, then hit **Refresh Client Atlas** to reload or recolor the table.
+- The NexisUploader tab converts `PurgedWorker` folders into Nexis-ready payloads, generates combined worker CSV/JSON files for engineers, batches worker detail exports into `CLEANEDFORNEXIS`, and exports/upgrades the official `FormatforClient(Nexis)/clients-data.csv` file from the per-client archives. Live preview panels show the JSON payload that will be uploaded to Nexis.
 - Bundle download buttons now open a package picker: select “All Packages” or click individual package buttons to queue bundle exports sequentially. Each run logs per-package outcomes and reuses the purgeable Excel snapshot saved under PDCC.
 - Added a **Purge All Clients** workflow that reads every client ID from the manifest, purges sequentially, and enforces a configurable cooldown (enter the delay in seconds, minimum 20) to avoid TurnPoint 403 lockouts. A red “Override cooldown / Force next client” button lets you skip the wait mid-cycle, and the cooldown progress bar counts down every pause.
 - Bundle + manifest actions now surface operational metadata: an indeterminate progress bar spins while bundles are downloading, and timestamp labels (“Bundle last run…”, “Manifest updated…”) let ops teams see when each dataset was last refreshed.
@@ -135,3 +136,4 @@ turnpoint-budgeter       # standalone budget export helper
   ```
 
 Refer to `PACKAGING.md` for deeper build/customization steps.
+- **Upcoming work:** appointments + invoices automation are next on the roadmap; hooks are being designed so future releases can pull those directly into Nexis alongside workers/clients.

@@ -127,6 +127,10 @@ class TurnpointPurgerUI(tk.Tk):
         self.nexis_user_var = tk.StringVar(value=os.getenv("NEXIS_USERNAME", ""))
         self.nexis_pass_var = tk.StringVar(value=os.getenv("NEXIS_PASSWORD", ""))
         self.cleaned_root_var = tk.StringVar(value=str(Path.home() / "CLEANEDFORNEXIS"))
+        self.clients_root_var = tk.StringVar(value=str(Path.home() / "PurgedClients"))
+        self.clients_out_var = tk.StringVar(
+            value=str(Path(__file__).resolve().parent / "FormatforClient(Nexis)" / "clients-data.csv")
+        )
 
         configure_credentials(self.credential_username, self.credential_password)
 
@@ -862,7 +866,7 @@ class TurnpointPurgerUI(tk.Tk):
 
         headline = tk.Label(
             left,
-            text="NexisUploader — Employees",
+            text="NexisUploader",
             fg="#f5fbff",
             bg="#050b16",
             font=("Orbitron", 26, "bold"),
@@ -881,14 +885,15 @@ class TurnpointPurgerUI(tk.Tk):
         controls = tk.Frame(left, bg="#050b16")
         controls.pack(anchor="w", padx=30, pady=(0, 8))
 
+        row_idx = 0
         tk.Label(
             controls,
             text="PurgedWorker root",
             fg="#9fe3ff",
             bg="#050b16",
             font=("Space Mono", 11),
-        ).grid(row=0, column=0, sticky="w")
-        entry = tk.Entry(
+        ).grid(row=row_idx, column=0, sticky="w")
+        tk.Entry(
             controls,
             textvariable=self.nexis_root_var,
             width=46,
@@ -897,26 +902,24 @@ class TurnpointPurgerUI(tk.Tk):
             fg="#e9f2ff",
             insertbackground="#18e0ff",
             relief="flat",
-        )
-        entry.grid(row=1, column=0, sticky="w", pady=(2, 8))
+        ).grid(row=row_idx + 1, column=0, sticky="w", pady=(2, 8))
         ttk.Button(
             controls,
             text="Scan workers",
             style="Cyber.TButton",
             command=self._handle_nexis_scan,
-        ).grid(row=1, column=1, padx=(10, 0), sticky="w")
+        ).grid(row=row_idx + 1, column=1, padx=(10, 0), sticky="w")
 
-        cleaned = tk.Frame(left, bg="#050b16")
-        cleaned.pack(anchor="w", padx=30, pady=(0, 8))
+        row_idx += 2
         tk.Label(
-            cleaned,
+            controls,
             text="CLEANEDFORNEXIS output",
             fg="#9fe3ff",
             bg="#050b16",
             font=("Space Mono", 11),
-        ).grid(row=0, column=0, sticky="w")
+        ).grid(row=row_idx, column=0, sticky="w")
         tk.Entry(
-            cleaned,
+            controls,
             textvariable=self.cleaned_root_var,
             width=46,
             font=("JetBrains Mono", 12),
@@ -924,25 +927,56 @@ class TurnpointPurgerUI(tk.Tk):
             fg="#e9f2ff",
             insertbackground="#18e0ff",
             relief="flat",
-        ).grid(row=1, column=0, sticky="w", pady=(2, 4))
+        ).grid(row=row_idx + 1, column=0, sticky="w", pady=(2, 4))
         ttk.Button(
-            cleaned,
-            text="Export selected WorkerDetail to CLEANEDFORNEXIS",
-            style="Cyber.TButton",
-            command=self._handle_export_cleaned,
-        ).grid(row=1, column=1, padx=(10, 0), sticky="w")
-        ttk.Button(
-            cleaned,
-            text="Export ALL to CLEANEDFORNEXIS",
-            style="Cyber.TButton",
-            command=self._handle_export_all_cleaned,
-        ).grid(row=2, column=1, padx=(10, 0), sticky="w", pady=(4, 0))
-        ttk.Button(
-            cleaned,
-            text="Combine Nexis CSV/JSON",
+            controls,
+            text="Combine Nexis worker CSV/JSON",
             style="Cyber.TButton",
             command=self._handle_combine_nexis,
-        ).grid(row=3, column=1, padx=(10, 0), sticky="w", pady=(4, 0))
+        ).grid(row=row_idx + 1, column=1, padx=(10, 0), sticky="w")
+
+        row_idx += 2
+        tk.Label(
+            controls,
+            text="PurgedClients root",
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 11),
+        ).grid(row=row_idx, column=0, sticky="w")
+        tk.Entry(
+            controls,
+            textvariable=self.clients_root_var,
+            width=46,
+            font=("JetBrains Mono", 12),
+            bg="#0a1324",
+            fg="#e9f2ff",
+            insertbackground="#18e0ff",
+            relief="flat",
+        ).grid(row=row_idx + 1, column=0, sticky="w", pady=(2, 4))
+        tk.Label(
+            controls,
+            text="Output clients-data.csv",
+            fg="#7cc3ff",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        ).grid(row=row_idx, column=1, sticky="w", padx=(10, 0))
+        tk.Entry(
+            controls,
+            textvariable=self.clients_out_var,
+            width=46,
+            font=("JetBrains Mono", 12),
+            bg="#0a1324",
+            fg="#e9f2ff",
+            insertbackground="#18e0ff",
+            relief="flat",
+        ).grid(row=row_idx + 1, column=1, sticky="w", padx=(10, 0), pady=(2, 4))
+        ttk.Button(
+            controls,
+            text="Export Client CSV",
+            style="Cyber.TButton",
+            command=self._handle_combine_clients,
+        ).grid(row=row_idx + 1, column=2, padx=(10, 0), sticky="w")
+
 
         creds = tk.Frame(left, bg="#050b16")
         creds.pack(anchor="w", padx=30, pady=(4, 6))
@@ -998,14 +1032,14 @@ class TurnpointPurgerUI(tk.Tk):
         ).pack(anchor="w", padx=30, pady=(4, 8))
 
         table_frame = tk.Frame(left, bg="#050b16")
-        table_frame.pack(fill="both", expand=True, padx=30, pady=(4, 10))
+        table_frame.pack(fill="both", expand=True, padx=30, pady=(4, 6))
 
         columns = ("order", "worker_id", "full_name", "team", "email")
         table = ttk.Treeview(
             table_frame,
             columns=columns,
             show="headings",
-            height=12,
+            height=10,
             style="Atlas.Treeview",
         )
         table.heading("order", text="#", anchor="center")
@@ -1025,6 +1059,41 @@ class TurnpointPurgerUI(tk.Tk):
         scroll.pack(side="right", fill="y")
         table.bind("<<TreeviewSelect>>", self._handle_nexis_select)
         self.nexis_table = table
+
+        # Client discover table
+        client_frame = tk.Frame(left, bg="#050b16")
+        client_frame.pack(fill="both", expand=True, padx=30, pady=(6, 10))
+        tk.Label(
+            client_frame,
+            text="Clients discovered",
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 10, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+
+        client_columns = ("order", "client_id", "client_name", "package")
+        client_table = ttk.Treeview(
+            client_frame,
+            columns=client_columns,
+            show="headings",
+            height=8,
+            style="Atlas.Treeview",
+        )
+        client_table.heading("order", text="#", anchor="center")
+        client_table.heading("client_id", text="Client ID", anchor="center")
+        client_table.heading("client_name", text="Client Name", anchor="w")
+        client_table.heading("package", text="Package", anchor="w")
+        client_table.column("order", width=60, anchor="center")
+        client_table.column("client_id", width=120, anchor="center")
+        client_table.column("client_name", width=260, anchor="w")
+        client_table.column("package", width=200, anchor="w")
+
+        cscroll = ttk.Scrollbar(client_frame, orient="vertical", command=client_table.yview)
+        client_table.configure(yscrollcommand=cscroll.set)
+        client_table.pack(side="left", fill="both", expand=True)
+        cscroll.pack(side="right", fill="y")
+        client_table.bind("<<TreeviewSelect>>", self._handle_client_select)
+        self.client_table = client_table
 
         preview_label = tk.Label(
             right,
@@ -2297,6 +2366,21 @@ class TurnpointPurgerUI(tk.Tk):
             )
         self.nexis_count_var.set(f"Workers discovered: {len(workers)} (sorted by team/name)")
 
+        # scan clients for display
+        headers, client_rows = self._collect_client_rows(
+            Path(self.clients_root_var.get()).expanduser(), None
+        )
+        if hasattr(self, "client_table") and self.client_table:
+            self.client_table.delete(*self.client_table.get_children())
+            for idx, row in enumerate(client_rows, start=1):
+                values = (
+                    idx,
+                    row.get("Client ID") or row.get("System ID") or "",
+                    row.get("Client Name") or "",
+                    row.get("Default Package") or "",
+                )
+                self.client_table.insert("", "end", values=values)
+
     def _handle_nexis_select(self, event):
         if not self.nexis_table or not self.nexis_preview:
             return
@@ -2318,6 +2402,27 @@ class TurnpointPurgerUI(tk.Tk):
         self.nexis_preview.insert("end", preview_text)
         self.nexis_preview.configure(state="disabled")
 
+    def _handle_client_select(self, event):
+        if not self.client_table or not self.nexis_preview:
+            return
+        sel = self.client_table.selection()
+        if not sel:
+            return
+        # For clients, just preview the raw row as JSON
+        item = self.client_table.item(sel[0])
+        values = item.get("values") or []
+        payload = {
+            "ClientID": values[1] if len(values) > 1 else "",
+            "ClientName": values[2] if len(values) > 2 else "",
+            "Package": values[3] if len(values) > 3 else "",
+        }
+        import json
+
+        preview_text = json.dumps(payload, indent=2)
+        self.nexis_preview.configure(state="normal")
+        self.nexis_preview.delete("1.0", "end")
+        self.nexis_preview.insert("end", preview_text)
+        self.nexis_preview.configure(state="disabled")
     def _handle_export_cleaned(self):
         if not self.nexis_table:
             return
@@ -2517,6 +2622,68 @@ class TurnpointPurgerUI(tk.Tk):
     def _build_clean_filename(self, prefix: int, full_name: str) -> str:
         safe_name = (full_name or "Worker").strip().replace(" ", "_") or "Worker"
         return f"{prefix} {safe_name}.csv"
+
+    def _collect_client_rows(self, root: Path, template_path: Path | None):
+        def _sanitize(value):
+            if value is None:
+                return ""
+            return str(value).replace("\r", " ").replace("\n", " ").strip()
+
+        template_headers: list[str] = []
+        if template_path and template_path.exists():
+            try:
+                with template_path.open("r", newline="", encoding="utf-8-sig") as fh:
+                    reader = csv.reader(fh)
+                    template_headers = next(reader, [])
+            except Exception:
+                template_headers = []
+
+        rows: list[dict[str, str]] = []
+        headers: list[str] = list(template_headers)
+
+        for path in root.glob("**/*Client-Details.csv"):
+            try:
+                with path.open("r", newline="", encoding="utf-8") as fh:
+                    reader = csv.DictReader(fh)
+                    first = next(reader, None)
+                    if not first:
+                        continue
+                    for key in reader.fieldnames or []:
+                        if key not in headers:
+                            headers.append(key)
+                    cleaned = {k: _sanitize(v) for k, v in first.items()}
+                    rows.append(cleaned)
+            except Exception as exc:
+                self._enqueue_log(self._timestamp(f"Client combine skip {path}: {exc}"))
+                continue
+
+        # prefer template header order when present
+        if template_headers:
+            headers = template_headers
+        return headers, rows
+
+    def _handle_combine_clients(self):
+        root = Path(self.clients_root_var.get()).expanduser()
+        out_path = Path(self.clients_out_var.get()).expanduser()
+        if not root.exists():
+            messagebox.showerror("Client Combine", f"PurgedClients path not found:\n{root}")
+            return
+        template_path = out_path if out_path.exists() else None
+        headers, rows = self._collect_client_rows(root, template_path)
+        if not rows:
+            messagebox.showinfo("Client Combine", "No client detail rows found.")
+            return
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with out_path.open("w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=headers)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow({h: row.get(h, "") for h in headers})
+            self._enqueue_log(self._timestamp(f"Combined {len(rows)} clients -> {out_path}"))
+            messagebox.showinfo("Client Combine", f"Combined {len(rows)} clients to {out_path}")
+        except Exception as exc:
+            messagebox.showerror("Client Combine", f"Combine failed:\n{exc}")
 
     def _set_worker_running(self, running):
         self.is_running = running
