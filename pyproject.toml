@@ -30,4 +30,5 @@ py-modules = [
     "purger_state",
     "worker_purger",
     "worker_state",
+    "nexis_uploader",
 ]

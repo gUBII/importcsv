@@ -31,6 +31,8 @@ from importcsv import (
     RUNTIME_PASSWORD,
 )
 from purger_state import get_purge_statistics
+from nexis_uploader import discover_workers, preview_payload, build_nexis_employee
+from nexis_submitter import submit_employee
 from worker_purger import (
     WORKER_MANIFEST_PATH,
     collect_workers,
@@ -116,6 +118,15 @@ class TurnpointPurgerUI(tk.Tk):
         self.worker_manifest_timestamp_var = tk.StringVar(
             value="Worker manifest not generated"
         )
+
+        # Nexis uploader state
+        self.nexis_root_var = tk.StringVar(value=str(Path.home() / "PurgedWorker"))
+        self.nexis_table = None
+        self.nexis_preview = None
+        self.nexis_count_var = tk.StringVar(value="No workers scanned yet.")
+        self.nexis_user_var = tk.StringVar(value=os.getenv("NEXIS_USERNAME", ""))
+        self.nexis_pass_var = tk.StringVar(value=os.getenv("NEXIS_PASSWORD", ""))
+        self.cleaned_root_var = tk.StringVar(value=str(Path.home() / "CLEANEDFORNEXIS"))
 
         configure_credentials(self.credential_username, self.credential_password)
 
@@ -263,12 +274,15 @@ class TurnpointPurgerUI(tk.Tk):
         notebook = ttk.Notebook(container)
         client_tab = tk.Frame(notebook, bg="#050b16")
         worker_tab = tk.Frame(notebook, bg="#050b16")
+        nexis_tab = tk.Frame(notebook, bg="#050b16")
         notebook.add(client_tab, text="Client Purger")
         notebook.add(worker_tab, text="Worker Purger")
+        notebook.add(nexis_tab, text="NexisUploader (Employees)")
         notebook.pack(fill="both", expand=True)
 
         self._build_client_layout(client_tab)
         self._build_worker_layout(worker_tab)
+        self._build_nexis_layout(nexis_tab)
         self._build_log_panel(container)
 
         version_badge = tk.Label(
@@ -836,6 +850,208 @@ class TurnpointPurgerUI(tk.Tk):
             justify="left",
         )
         notes.pack(anchor="w", padx=20, pady=(8, 12))
+
+    def _build_nexis_layout(self, parent):
+        parent.columnconfigure(0, weight=3)
+        parent.columnconfigure(1, weight=2)
+
+        left = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 24), pady=(10, 0))
+        right = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
+        right.grid(row=0, column=1, sticky="nsew", pady=(10, 0))
+
+        headline = tk.Label(
+            left,
+            text="NexisUploader — Employees",
+            fg="#f5fbff",
+            bg="#050b16",
+            font=("Orbitron", 26, "bold"),
+        )
+        headline.pack(anchor="w", padx=30, pady=(24, 6))
+
+        subline = tk.Label(
+            left,
+            text="Map PurgedWorker CSVs into Nexis-ready payloads",
+            fg="#7cc3ff",
+            bg="#050b16",
+            font=("Space Mono", 12),
+        )
+        subline.pack(anchor="w", padx=30, pady=(0, 12))
+
+        controls = tk.Frame(left, bg="#050b16")
+        controls.pack(anchor="w", padx=30, pady=(0, 8))
+
+        tk.Label(
+            controls,
+            text="PurgedWorker root",
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 11),
+        ).grid(row=0, column=0, sticky="w")
+        entry = tk.Entry(
+            controls,
+            textvariable=self.nexis_root_var,
+            width=46,
+            font=("JetBrains Mono", 12),
+            bg="#0a1324",
+            fg="#e9f2ff",
+            insertbackground="#18e0ff",
+            relief="flat",
+        )
+        entry.grid(row=1, column=0, sticky="w", pady=(2, 8))
+        ttk.Button(
+            controls,
+            text="Scan workers",
+            style="Cyber.TButton",
+            command=self._handle_nexis_scan,
+        ).grid(row=1, column=1, padx=(10, 0), sticky="w")
+
+        cleaned = tk.Frame(left, bg="#050b16")
+        cleaned.pack(anchor="w", padx=30, pady=(0, 8))
+        tk.Label(
+            cleaned,
+            text="CLEANEDFORNEXIS output",
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 11),
+        ).grid(row=0, column=0, sticky="w")
+        tk.Entry(
+            cleaned,
+            textvariable=self.cleaned_root_var,
+            width=46,
+            font=("JetBrains Mono", 12),
+            bg="#0a1324",
+            fg="#e9f2ff",
+            insertbackground="#18e0ff",
+            relief="flat",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 4))
+        ttk.Button(
+            cleaned,
+            text="Export selected WorkerDetail to CLEANEDFORNEXIS",
+            style="Cyber.TButton",
+            command=self._handle_export_cleaned,
+        ).grid(row=1, column=1, padx=(10, 0), sticky="w")
+        ttk.Button(
+            cleaned,
+            text="Export ALL to CLEANEDFORNEXIS",
+            style="Cyber.TButton",
+            command=self._handle_export_all_cleaned,
+        ).grid(row=2, column=1, padx=(10, 0), sticky="w", pady=(4, 0))
+        ttk.Button(
+            cleaned,
+            text="Combine Nexis CSV/JSON",
+            style="Cyber.TButton",
+            command=self._handle_combine_nexis,
+        ).grid(row=3, column=1, padx=(10, 0), sticky="w", pady=(4, 0))
+
+        creds = tk.Frame(left, bg="#050b16")
+        creds.pack(anchor="w", padx=30, pady=(4, 6))
+        tk.Label(
+            creds,
+            text="Nexis credentials",
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 11),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        tk.Label(
+            creds,
+            text="Username",
+            fg="#7cc3ff",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        ).grid(row=1, column=0, sticky="w")
+        tk.Entry(
+            creds,
+            textvariable=self.nexis_user_var,
+            width=30,
+            font=("JetBrains Mono", 11),
+            bg="#0a1324",
+            fg="#e9f2ff",
+            insertbackground="#18e0ff",
+            relief="flat",
+        ).grid(row=2, column=0, sticky="w", pady=(0, 4))
+        tk.Label(
+            creds,
+            text="Password",
+            fg="#7cc3ff",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        ).grid(row=1, column=1, sticky="w", padx=(10, 0))
+        tk.Entry(
+            creds,
+            textvariable=self.nexis_pass_var,
+            width=30,
+            font=("JetBrains Mono", 11),
+            bg="#0a1324",
+            fg="#e9f2ff",
+            insertbackground="#18e0ff",
+            relief="flat",
+            show="*",
+        ).grid(row=2, column=1, sticky="w", padx=(10, 0), pady=(0, 4))
+
+        tk.Label(
+            left,
+            textvariable=self.nexis_count_var,
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        ).pack(anchor="w", padx=30, pady=(4, 8))
+
+        table_frame = tk.Frame(left, bg="#050b16")
+        table_frame.pack(fill="both", expand=True, padx=30, pady=(4, 10))
+
+        columns = ("order", "worker_id", "full_name", "team", "email")
+        table = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            height=12,
+            style="Atlas.Treeview",
+        )
+        table.heading("order", text="#", anchor="center")
+        table.heading("worker_id", text="Worker ID", anchor="center")
+        table.heading("full_name", text="Full Name", anchor="w")
+        table.heading("team", text="Team", anchor="w")
+        table.heading("email", text="Email (mapped)", anchor="w")
+        table.column("order", width=60, anchor="center")
+        table.column("worker_id", width=120, anchor="center")
+        table.column("full_name", width=260, anchor="w")
+        table.column("team", width=200, anchor="w")
+        table.column("email", width=260, anchor="w")
+
+        scroll = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
+        table.configure(yscrollcommand=scroll.set)
+        table.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        table.bind("<<TreeviewSelect>>", self._handle_nexis_select)
+        self.nexis_table = table
+
+        preview_label = tk.Label(
+            right,
+            text="Mapped Nexis payload (preview)",
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 11, "bold"),
+        )
+        preview_label.pack(anchor="w", padx=20, pady=(12, 6))
+        ttk.Button(
+            right,
+            text="Upload selected to Nexis",
+            style="Cyber.TButton",
+            command=self._handle_nexis_upload,
+        ).pack(anchor="w", padx=20, pady=(0, 8))
+        preview = scrolledtext.ScrolledText(
+            right,
+            height=28,
+            wrap="word",
+            font=("JetBrains Mono", 11),
+            bg="#0b1322",
+            fg="#dbe7ff",
+            relief="flat",
+        )
+        preview.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        preview.configure(state="disabled")
+        self.nexis_preview = preview
 
     def _build_log_panel(self, parent):
         log_panel = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
@@ -2059,6 +2275,173 @@ class TurnpointPurgerUI(tk.Tk):
             self._enqueue_log(self._timestamp(f"Worker purge failure: {exc}"))
             self._notify_worker_completion(success=False, error=str(exc))
 
+    def _handle_nexis_scan(self):
+        root = Path(self.nexis_root_var.get()).expanduser()
+        if not root.exists():
+            messagebox.showerror("NexisUploader", f"Path not found:\n{root}")
+            return
+        try:
+            workers = discover_workers(root)
+        except Exception as exc:
+            messagebox.showerror("NexisUploader", f"Scan failed:\n{exc}")
+            return
+        self._cached_workers = workers
+        if not self.nexis_table:
+            return
+        self.nexis_table.delete(*self.nexis_table.get_children())
+        for idx, worker in enumerate(workers, start=1):
+            email = worker.data.get("Email") or worker.data.get("Mobile") or ""
+            values = (idx, worker.worker_id, worker.full_name, worker.team, email)
+            self.nexis_table.insert(
+                "", "end", values=values, tags=("pending",), iid=worker.path.as_posix()
+            )
+        self.nexis_count_var.set(f"Workers discovered: {len(workers)} (sorted by team/name)")
+
+    def _handle_nexis_select(self, event):
+        if not self.nexis_table or not self.nexis_preview:
+            return
+        sel = self.nexis_table.selection()
+        if not sel:
+            return
+        path_str = sel[0]
+        try:
+            root = Path(self.nexis_root_var.get()).expanduser()
+            records = self._load_discovered_workers(root)
+            record = next((w for w in records if w.path.as_posix() == path_str), None)
+            if not record:
+                return
+            preview_text = preview_payload(record)
+        except Exception as exc:
+            preview_text = f"Error building payload:\n{exc}"
+        self.nexis_preview.configure(state="normal")
+        self.nexis_preview.delete("1.0", "end")
+        self.nexis_preview.insert("end", preview_text)
+        self.nexis_preview.configure(state="disabled")
+
+    def _handle_export_cleaned(self):
+        if not self.nexis_table:
+            return
+        sel = self.nexis_table.selection()
+        if not sel:
+            messagebox.showinfo("NexisUploader", "Select a worker row first.")
+            return
+        path_str = sel[0]
+        root = Path(self.nexis_root_var.get()).expanduser()
+        cleaned_root = Path(self.cleaned_root_var.get()).expanduser()
+        records = self._load_discovered_workers(root)
+        record = next((w for w in records if w.path.as_posix() == path_str), None)
+        if not record:
+            messagebox.showerror("NexisUploader", "Unable to locate selected worker record.")
+            return
+        cleaned_root.mkdir(parents=True, exist_ok=True)
+        # determine next 10000x sequence
+        next_id = self._next_clean_id(cleaned_root)
+        target = cleaned_root / self._build_clean_filename(next_id, record.full_name)
+        try:
+            import shutil
+
+            shutil.copy2(record.path, target)
+            self._enqueue_log(self._timestamp(f"Exported {record.full_name} -> {target}"))
+            messagebox.showinfo("NexisUploader", f"Exported to {target}")
+        except Exception as exc:
+            messagebox.showerror("NexisUploader", f"Export failed:\n{exc}")
+
+    def _handle_export_all_cleaned(self):
+        root = Path(self.nexis_root_var.get()).expanduser()
+        cleaned_root = Path(self.cleaned_root_var.get()).expanduser()
+        records = self._load_discovered_workers(root)
+        if not records:
+            messagebox.showinfo("NexisUploader", "No workers to export. Scan first.")
+            return
+        cleaned_root.mkdir(parents=True, exist_ok=True)
+        next_id = self._next_clean_id(cleaned_root)
+        count = 0
+        try:
+            import shutil
+        except ImportError:
+            shutil = None
+        for record in records:
+            target = cleaned_root / self._build_clean_filename(next_id, record.full_name)
+            try:
+                if shutil:
+                    shutil.copy2(record.path, target)
+                else:
+                    with record.path.open("rb") as src, target.open("wb") as dst:
+                        dst.write(src.read())
+                self._enqueue_log(self._timestamp(f"Exported {record.full_name} -> {target}"))
+                next_id += 1
+                count += 1
+            except Exception as exc:
+                self._enqueue_log(self._timestamp(f"Export failed for {record.full_name}: {exc}"))
+                continue
+        messagebox.showinfo("NexisUploader", f"Exported {count} worker CSVs to {cleaned_root}")
+
+    def _handle_combine_nexis(self):
+        root = Path(self.nexis_root_var.get()).expanduser()
+        cleaned_root = Path(self.cleaned_root_var.get()).expanduser()
+        records = self._load_discovered_workers(root)
+        if not records:
+            messagebox.showinfo("NexisUploader", "No workers to combine. Scan first.")
+            return
+        cleaned_root.mkdir(parents=True, exist_ok=True)
+        # build nexis payloads
+        nexis_records = [build_nexis_employee(r) for r in records]
+        headers = []
+        for rec in nexis_records:
+            for key in rec.keys():
+                if key not in headers:
+                    headers.append(key)
+        csv_path = cleaned_root / "combined_workers_nexis.csv"
+        json_path = cleaned_root / "combined_workers_nexis.json"
+        try:
+            import csv
+            import json
+            with csv_path.open("w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=headers)
+                writer.writeheader()
+                for rec in nexis_records:
+                    writer.writerow({h: rec.get(h, "") for h in headers})
+            with json_path.open("w", encoding="utf-8") as fh:
+                json.dump(nexis_records, fh, indent=2, ensure_ascii=False)
+            self._enqueue_log(self._timestamp(f"Combined Nexis payloads -> {csv_path} / {json_path}"))
+            messagebox.showinfo("NexisUploader", f"Nexis combined CSV/JSON written to:\n{csv_path}\n{json_path}")
+        except Exception as exc:
+            messagebox.showerror("NexisUploader", f"Combine failed:\n{exc}")
+
+    def _handle_nexis_upload(self):
+        if not self.nexis_table:
+            return
+        sel = self.nexis_table.selection()
+        if not sel:
+            messagebox.showinfo("NexisUploader", "Select a worker row first.")
+            return
+        path_str = sel[0]
+        root = Path(self.nexis_root_var.get()).expanduser()
+        records = self._load_discovered_workers(root)
+        record = next((w for w in records if w.path.as_posix() == path_str), None)
+        if not record:
+            messagebox.showerror("NexisUploader", "Unable to locate selected worker record.")
+            return
+        user = self.nexis_user_var.get().strip()
+        pwd = self.nexis_pass_var.get().strip()
+        if not user or not pwd:
+            messagebox.showerror("NexisUploader", "Set Nexis credentials before uploading.")
+            return
+
+        def task():
+            try:
+                payload_json = preview_payload(record)
+                import json
+                data = json.loads(payload_json)
+                submit_employee(data, headless=self.headless_var.get(), username=user, password=pwd)
+                self._enqueue_log(self._timestamp(f"Nexis upload complete for {record.full_name} ({record.worker_id})"))
+                self.after(0, lambda: messagebox.showinfo("NexisUploader", f"Uploaded {record.full_name} to Nexis."))
+            except Exception as exc:
+                self._enqueue_log(self._timestamp(f"Nexis upload failed: {exc}"))
+                self.after(0, lambda: messagebox.showerror("NexisUploader", f"Upload failed:\n{exc}"))
+
+        self._run_button_task(None, task)
+
     def _notify_completion(self, success, output=None, error=None):
         def finalize():
             self._set_running(False)
@@ -2106,8 +2489,34 @@ class TurnpointPurgerUI(tk.Tk):
         else:
             self.primary_bar.stop()
             self.secondary_bar.stop()
-            self.secondary_bar.start(65)
-            self.launch_button.configure(text="Engage Purge", state="normal")
+        self.secondary_bar.start(65)
+        self.launch_button.configure(text="Engage Purge", state="normal")
+
+    def _load_discovered_workers(self, root: Path):
+        if hasattr(self, "_cached_workers"):
+            cached = getattr(self, "_cached_workers")
+            if cached:
+                return cached
+        try:
+            workers = discover_workers(root)
+        except Exception:
+            workers = []
+        self._cached_workers = workers
+        return workers
+
+    def _next_clean_id(self, cleaned_root: Path) -> int:
+        existing = []
+        for f in cleaned_root.glob("*.csv"):
+            try:
+                prefix = f.name.split()[0]
+                existing.append(int(prefix))
+            except Exception:
+                continue
+        return max(existing) + 1 if existing else 100001
+
+    def _build_clean_filename(self, prefix: int, full_name: str) -> str:
+        safe_name = (full_name or "Worker").strip().replace(" ", "_") or "Worker"
+        return f"{prefix} {safe_name}.csv"
 
     def _set_worker_running(self, running):
         self.is_running = running
