@@ -44,7 +44,12 @@ from worker_purger import (
     reset_worker_data,
 )
 from worker_state import get_worker_statistics
-from service_type_rate_extractor import capture_live_rates
+from service_type_rate_extractor import (
+    DATASET_COLUMNS,
+    capture_service_type_rates,
+    default_rate_numeric,
+    normalize_external_row,
+)
 
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -142,6 +147,15 @@ class TurnpointPurgerUI(tk.Tk):
         self.rate_running = False
         self.rate_capture_button = None
         self.rate_export_button = None
+        self.rate_apply_button = None
+        self.rate_all_rows = []
+        self.rate_visible_rows = []
+        self.rate_sort_var = tk.StringVar(value="ServiceType (A→Z)")
+        self.rate_deleted_no_var = tk.BooleanVar(value=True)
+        self.rate_positive_var = tk.BooleanVar(value=False)
+        self.rate_service_code_var = tk.BooleanVar(value=False)
+        self.rate_sil_var = tk.BooleanVar(value=False)
+        self.rate_search_var = tk.StringVar(value="")
 
         configure_credentials(self.credential_username, self.credential_password)
 
@@ -1138,7 +1152,7 @@ class TurnpointPurgerUI(tk.Tk):
 
     def _build_service_rate_layout(self, parent):
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(1, weight=1)
+        parent.rowconfigure(2, weight=1)
 
         header = tk.Frame(parent, bg="#050b16")
         header.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 8))
@@ -1154,21 +1168,21 @@ class TurnpointPurgerUI(tk.Tk):
         tk.Label(
             header,
             text=(
-                "Read-only global reference extractor from TurnPoint Add Appointment "
-                "(client agnostic, non-purge, non-destructive)."
+                "Global Service Types capture (read-only, non-purge, non-destructive). "
+                "Source: service-types.asp with export-first + HTML fallback."
             ),
             fg="#7cc3ff",
             bg="#050b16",
             font=("Space Mono", 11),
-            wraplength=1000,
+            wraplength=1020,
             justify="left",
         ).pack(anchor="w", pady=(4, 10))
 
-        controls = tk.Frame(header, bg="#050b16")
-        controls.pack(anchor="w", fill="x")
+        actions = tk.Frame(header, bg="#050b16")
+        actions.pack(anchor="w", fill="x")
 
         self.rate_capture_button = ttk.Button(
-            controls,
+            actions,
             text="Capture Live Rates",
             style="Cyber.TButton",
             command=self._handle_capture_live_rates,
@@ -1176,8 +1190,8 @@ class TurnpointPurgerUI(tk.Tk):
         self.rate_capture_button.pack(side="left", padx=(0, 10))
 
         self.rate_export_button = ttk.Button(
-            controls,
-            text="Import CSV",
+            actions,
+            text="ImportCSV",
             style="Cyber.TButton",
             command=self._handle_rate_import_csv,
         )
@@ -1189,16 +1203,125 @@ class TurnpointPurgerUI(tk.Tk):
             fg="#9fe3ff",
             bg="#050b16",
             font=("Space Mono", 10),
-            wraplength=1000,
+            wraplength=1020,
             justify="left",
         ).pack(anchor="w", pady=(10, 0))
 
+        filters = tk.Frame(parent, bg="#050b16")
+        filters.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 10))
+
+        tk.Label(
+            filters,
+            text="Sort / Filter",
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 11, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        sort_options = [
+            "ServiceType (A→Z)",
+            "ServiceType (Z→A)",
+            "DefaultRate (Low→High)",
+            "DefaultRate (High→Low)",
+            "ServiceCode (A→Z)",
+            "Package (A→Z)",
+            "BillingType (A→Z)",
+        ]
+        sort_combo = ttk.Combobox(
+            filters,
+            textvariable=self.rate_sort_var,
+            values=sort_options,
+            state="readonly",
+            width=28,
+        )
+        sort_combo.grid(row=0, column=1, sticky="w", padx=(0, 12))
+
+        tk.Checkbutton(
+            filters,
+            text="Deleted = No",
+            variable=self.rate_deleted_no_var,
+            bg="#050b16",
+            fg="#d8e5ff",
+            selectcolor="#0b1322",
+            activebackground="#050b16",
+            activeforeground="#d8e5ff",
+        ).grid(row=0, column=2, sticky="w", padx=(0, 10))
+
+        tk.Checkbutton(
+            filters,
+            text="DefaultRate > 0",
+            variable=self.rate_positive_var,
+            bg="#050b16",
+            fg="#d8e5ff",
+            selectcolor="#0b1322",
+            activebackground="#050b16",
+            activeforeground="#d8e5ff",
+        ).grid(row=0, column=3, sticky="w", padx=(0, 10))
+
+        tk.Checkbutton(
+            filters,
+            text="ServiceCode not empty",
+            variable=self.rate_service_code_var,
+            bg="#050b16",
+            fg="#d8e5ff",
+            selectcolor="#0b1322",
+            activebackground="#050b16",
+            activeforeground="#d8e5ff",
+        ).grid(row=0, column=4, sticky="w", padx=(0, 10))
+
+        tk.Checkbutton(
+            filters,
+            text="ServiceType contains SIL",
+            variable=self.rate_sil_var,
+            bg="#050b16",
+            fg="#d8e5ff",
+            selectcolor="#0b1322",
+            activebackground="#050b16",
+            activeforeground="#d8e5ff",
+        ).grid(row=0, column=5, sticky="w", padx=(0, 12))
+
+        tk.Label(
+            filters,
+            text="Search",
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        ).grid(row=0, column=6, sticky="w", padx=(0, 6))
+
+        search_entry = tk.Entry(
+            filters,
+            textvariable=self.rate_search_var,
+            width=28,
+            font=("JetBrains Mono", 11),
+            bg="#0a1324",
+            fg="#e9f2ff",
+            insertbackground="#18e0ff",
+            relief="flat",
+        )
+        search_entry.grid(row=0, column=7, sticky="w", padx=(0, 10))
+        search_entry.bind("<Return>", lambda _event: self._apply_rate_filters())
+
+        self.rate_apply_button = ttk.Button(
+            filters,
+            text="Apply",
+            style="Cyber.TButton",
+            command=self._apply_rate_filters,
+        )
+        self.rate_apply_button.grid(row=0, column=8, sticky="w")
+        sort_combo.bind("<<ComboboxSelected>>", lambda _event: self._apply_rate_filters())
+
         table_frame = tk.Frame(parent, bg="#050b16")
-        table_frame.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 16))
+        table_frame.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 16))
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
-        columns = ("service_type", "service", "rate", "line_item_number")
+        columns = (
+            "service_type",
+            "service_type_id",
+            "default_rate",
+            "service_code",
+            "service_type_link",
+        )
         table = ttk.Treeview(
             table_frame,
             columns=columns,
@@ -1206,14 +1329,16 @@ class TurnpointPurgerUI(tk.Tk):
             height=20,
             style="Atlas.Treeview",
         )
-        table.heading("service_type", text="Service Type", anchor="w")
-        table.heading("service", text="Service", anchor="w")
-        table.heading("rate", text="Rate", anchor="center")
-        table.heading("line_item_number", text="Line Item Number", anchor="w")
-        table.column("service_type", width=420, anchor="w")
-        table.column("service", width=280, anchor="w")
-        table.column("rate", width=130, anchor="center")
-        table.column("line_item_number", width=240, anchor="w")
+        table.heading("service_type", text="ServiceType", anchor="w")
+        table.heading("service_type_id", text="ServiceTypeID", anchor="center")
+        table.heading("default_rate", text="DefaultRate", anchor="center")
+        table.heading("service_code", text="ServiceCode", anchor="w")
+        table.heading("service_type_link", text="ServiceTypeLink", anchor="w")
+        table.column("service_type", width=330, anchor="w")
+        table.column("service_type_id", width=130, anchor="center")
+        table.column("default_rate", width=130, anchor="center")
+        table.column("service_code", width=180, anchor="w")
+        table.column("service_type_link", width=420, anchor="w")
 
         scroll = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
         table.configure(yscrollcommand=scroll.set)
@@ -2656,66 +2781,119 @@ class TurnpointPurgerUI(tk.Tk):
             self.rate_export_button.configure(
                 state="disabled" if running else "normal"
             )
+        if self.rate_apply_button:
+            self.rate_apply_button.configure(
+                state="disabled" if running else "normal"
+            )
 
     def _clear_rate_table(self):
         if not self.rate_table:
             return
         self.rate_table.delete(*self.rate_table.get_children())
 
-    def _append_rate_row(self, row):
+    def _insert_rate_preview_row(self, row):
         if not self.rate_table:
             return
         values = (
-            row.get("service_type", ""),
-            row.get("service", ""),
-            row.get("rate", ""),
-            row.get("line_item_number", ""),
+            row.get("ServiceType", ""),
+            row.get("ServiceTypeID", ""),
+            row.get("DefaultRate", ""),
+            row.get("ServiceCode", ""),
+            row.get("ServiceTypeLink", ""),
         )
         self.rate_table.insert("", "end", values=values)
 
-    def _collect_rate_table_rows(self):
-        rows = []
-        if not self.rate_table:
-            return rows
-        for item in self.rate_table.get_children():
-            values = self.rate_table.item(item).get("values", [])
-            row = [
-                str(values[0]) if len(values) > 0 else "",
-                str(values[1]) if len(values) > 1 else "",
-                str(values[2]) if len(values) > 2 else "",
-                str(values[3]) if len(values) > 3 else "",
-            ]
-            rows.append(row)
-        return rows
+    def _rate_row_matches_filters(self, row):
+        deleted = (row.get("Deleted") or "").strip().lower()
+        if self.rate_deleted_no_var.get() and deleted in {"yes", "y", "true", "1", "deleted"}:
+            return False
+
+        if self.rate_positive_var.get() and default_rate_numeric(row.get("DefaultRate", "")) <= 0:
+            return False
+
+        if self.rate_service_code_var.get() and not (row.get("ServiceCode") or "").strip():
+            return False
+
+        if self.rate_sil_var.get() and "sil" not in (row.get("ServiceType") or "").lower():
+            return False
+
+        search = self.rate_search_var.get().strip().lower()
+        if search:
+            text = f"{row.get('ServiceType', '')} {row.get('ServiceCode', '')}".lower()
+            if search not in text:
+                return False
+        return True
+
+    def _sorted_rate_rows(self, rows):
+        option = self.rate_sort_var.get().strip()
+        if option == "ServiceType (Z→A)":
+            return sorted(rows, key=lambda r: (r.get("ServiceType", "").lower()), reverse=True)
+        if option == "DefaultRate (Low→High)":
+            return sorted(rows, key=lambda r: default_rate_numeric(r.get("DefaultRate", "")))
+        if option == "DefaultRate (High→Low)":
+            return sorted(rows, key=lambda r: default_rate_numeric(r.get("DefaultRate", "")), reverse=True)
+        if option == "ServiceCode (A→Z)":
+            return sorted(rows, key=lambda r: (r.get("ServiceCode", "").lower()))
+        if option == "Package (A→Z)":
+            return sorted(rows, key=lambda r: (r.get("Package", "").lower()))
+        if option == "BillingType (A→Z)":
+            return sorted(rows, key=lambda r: (r.get("BillingType", "").lower()))
+        return sorted(rows, key=lambda r: (r.get("ServiceType", "").lower()))
+
+    def _apply_rate_filters(self):
+        rows = [row for row in self.rate_all_rows if self._rate_row_matches_filters(row)]
+        rows = self._sorted_rate_rows(rows)
+        self.rate_visible_rows = rows
+        self._clear_rate_table()
+        for row in rows:
+            self._insert_rate_preview_row(row)
+        self.rate_status_var.set(
+            f"ServiceType dataset: {len(rows)} shown / {len(self.rate_all_rows)} total."
+        )
+
+    def _load_rate_dataset(self, rows):
+        self.rate_all_rows = []
+        for row in rows:
+            normalized = {column: str(row.get(column, "")) for column in DATASET_COLUMNS}
+            self.rate_all_rows.append(normalized)
+        self._apply_rate_filters()
 
     def _handle_capture_live_rates(self):
         if self.rate_running:
             return
         self._clear_rate_table()
+        self.rate_all_rows = []
+        self.rate_visible_rows = []
         self._set_rate_running(True)
-        self.rate_status_var.set("ServiceType rate capture in progress...")
+        self.rate_status_var.set("ServiceType rate capture in progress (stealth mode)...")
         self._enqueue_log(self._timestamp("[ServiceType→Rate] Capture started."))
 
         def on_row(row):
-            self.after(0, lambda r=row: self._append_rate_row(r))
+            def add_row():
+                normalized = {column: str(row.get(column, "")) for column in DATASET_COLUMNS}
+                self.rate_all_rows.append(normalized)
+                if self._rate_row_matches_filters(normalized):
+                    self._insert_rate_preview_row(normalized)
+            self.after(0, add_row)
 
         def on_progress(message):
-            self._enqueue_log(self._timestamp(f"[ServiceType→Rate] {message}"))
             self.after(0, lambda m=message: self.rate_status_var.set(m))
-
-        def on_warning(message):
-            self._enqueue_log(self._timestamp(f"[ServiceType→Rate] {message}"))
 
         def task():
             try:
-                rows = capture_live_rates(
-                    headless=self.headless_var.get(),
+                result = capture_service_type_rates(
+                    headless=True,
                     on_row=on_row,
                     on_progress=on_progress,
-                    on_warning=on_warning,
                 )
+                rows = result.get("rows", []) or []
+                method = result.get("method", "unknown")
+                csv_path = result.get("csv_path", "")
+                xlsx_path = result.get("xlsx_path", "")
+                self.after(0, self._apply_rate_filters)
                 summary = (
-                    f"ServiceType rate capture complete. Extracted {len(rows)} row(s)."
+                    f"Capture complete ({method}): {len(rows)} row(s).\n"
+                    f"CSV: {csv_path}\nXLSX: {xlsx_path}"
                 )
                 self._enqueue_log(self._timestamp(f"[ServiceType→Rate] {summary}"))
                 self.after(0, lambda: self.rate_status_var.set(summary))
@@ -2749,15 +2927,52 @@ class TurnpointPurgerUI(tk.Tk):
         if self.rate_running:
             messagebox.showwarning(
                 "ServiceType → Rate Extractor",
-                "Wait for capture to finish before exporting.",
+                "Wait for capture to finish before importing.",
             )
             return
-        if not self._collect_rate_table_rows():
+        selected = filedialog.askopenfilename(
+            title="ImportCSV - select source CSV",
+            parent=self,
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not selected:
+            return
+        source = Path(selected).expanduser()
+        if not source.exists():
+            messagebox.showerror(
+                "ServiceType → Rate Extractor",
+                f"File not found:\n{source}",
+            )
+            return
+
+        imported_rows = []
+        captured_at = datetime.now().isoformat()
+        try:
+            with source.open("r", newline="", encoding="utf-8-sig") as fh:
+                reader = csv.DictReader(fh)
+                for raw in reader:
+                    normalized = normalize_external_row(raw, captured_at=captured_at)
+                    if normalized.get("ServiceType"):
+                        imported_rows.append(normalized)
+        except Exception as exc:
+            messagebox.showerror(
+                "ServiceType → Rate Extractor",
+                f"Failed to import CSV:\n{exc}",
+            )
+            return
+
+        if not imported_rows:
             messagebox.showinfo(
                 "ServiceType → Rate Extractor",
-                "No rows available. Run Capture Live Rates first.",
+                "Imported CSV has no valid ServiceType rows.",
             )
             return
+        self._load_rate_dataset(imported_rows)
+        self._enqueue_log(
+            self._timestamp(
+                f"[ServiceType→Rate] ImportCSV loaded {len(imported_rows)} row(s) from {source}"
+            )
+        )
 
         dialog = tk.Toplevel(self)
         dialog.title("Import CSV")
@@ -2775,16 +2990,16 @@ class TurnpointPurgerUI(tk.Tk):
 
         ttk.Button(
             dialog,
-            text="Export as CSV",
+            text="Want in CSV?",
             style="Cyber.TButton",
-            command=lambda: (dialog.destroy(), self._export_service_type_rates_csv()),
+            command=lambda: (dialog.destroy(), self._export_service_types_csv()),
         ).pack(fill="x", padx=20, pady=(0, 8))
 
         ttk.Button(
             dialog,
-            text="Export as Excel",
+            text="Want in Excel?",
             style="Cyber.TButton",
-            command=lambda: (dialog.destroy(), self._export_service_type_rates_excel()),
+            command=lambda: (dialog.destroy(), self._export_service_types_xlsx()),
         ).pack(fill="x", padx=20, pady=(0, 12))
 
         ttk.Button(
@@ -2794,28 +3009,29 @@ class TurnpointPurgerUI(tk.Tk):
             command=dialog.destroy,
         ).pack(fill="x", padx=20, pady=(0, 16))
 
-    def _export_service_type_rates_csv(self):
-        rows = self._collect_rate_table_rows()
+    def _export_service_types_csv(self):
+        rows = list(self.rate_visible_rows or self.rate_all_rows)
         if not rows:
             messagebox.showinfo(
                 "ServiceType → Rate Extractor",
                 "No rows to export.",
             )
             return
-        directory = filedialog.askdirectory(
-            title="Select export directory for ServiceType_Rates.csv",
+        target = filedialog.asksaveasfilename(
+            title="Save CSV",
             parent=self,
+            defaultextension=".csv",
+            initialfile="ServiceTypes_imported.csv",
+            filetypes=[("CSV files", "*.csv")],
         )
-        if not directory:
+        if not target:
             return
-        output_path = Path(directory) / "ServiceType_Rates.csv"
+        output_path = Path(target)
         with output_path.open("w", newline="", encoding="utf-8") as fh:
-            writer = csv.writer(fh)
-            writer.writerow(
-                ["Service Type", "Service", "Rate", "Line Item Number"]
-            )
+            writer = csv.DictWriter(fh, fieldnames=DATASET_COLUMNS)
+            writer.writeheader()
             for row in rows:
-                writer.writerow(row)
+                writer.writerow({column: row.get(column, "") for column in DATASET_COLUMNS})
         self._enqueue_log(
             self._timestamp(f"[ServiceType→Rate] CSV exported -> {output_path}")
         )
@@ -2824,21 +3040,24 @@ class TurnpointPurgerUI(tk.Tk):
             f"Exported CSV to:\n{output_path}",
         )
 
-    def _export_service_type_rates_excel(self):
-        rows = self._collect_rate_table_rows()
+    def _export_service_types_xlsx(self):
+        rows = list(self.rate_visible_rows or self.rate_all_rows)
         if not rows:
             messagebox.showinfo(
                 "ServiceType → Rate Extractor",
                 "No rows to export.",
             )
             return
-        directory = filedialog.askdirectory(
-            title="Select export directory for ServiceType_Rates.xlsx",
+        target = filedialog.asksaveasfilename(
+            title="Save Excel",
             parent=self,
+            defaultextension=".xlsx",
+            initialfile="ServiceTypes_imported.xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
         )
-        if not directory:
+        if not target:
             return
-        output_path = Path(directory) / "ServiceType_Rates.xlsx"
+        output_path = Path(target)
         try:
             from openpyxl import Workbook
         except Exception as exc:
@@ -2850,10 +3069,10 @@ class TurnpointPurgerUI(tk.Tk):
 
         workbook = Workbook()
         sheet = workbook.active
-        sheet.title = "ServiceType Rates"
-        sheet.append(["Service Type", "Service", "Rate", "Line Item Number"])
+        sheet.title = "ServiceTypes"
+        sheet.append(DATASET_COLUMNS)
         for row in rows:
-            sheet.append(row)
+            sheet.append([row.get(column, "") for column in DATASET_COLUMNS])
         workbook.save(output_path)
 
         self._enqueue_log(
