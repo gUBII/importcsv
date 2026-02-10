@@ -148,9 +148,10 @@ class TurnpointPurgerUI(tk.Tk):
         self.rate_capture_button = None
         self.rate_export_button = None
         self.rate_apply_button = None
+        self.rate_log_view = None
         self.rate_all_rows = []
         self.rate_visible_rows = []
-        self.rate_sort_var = tk.StringVar(value="ServiceType (A→Z)")
+        self.rate_sort_var = tk.StringVar(value="Service Type (A→Z)")
         self.rate_deleted_no_var = tk.BooleanVar(value=True)
         self.rate_positive_var = tk.BooleanVar(value=False)
         self.rate_service_code_var = tk.BooleanVar(value=False)
@@ -1207,6 +1208,28 @@ class TurnpointPurgerUI(tk.Tk):
             justify="left",
         ).pack(anchor="w", pady=(10, 0))
 
+        tk.Label(
+            header,
+            text="Status",
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 10, "bold"),
+        ).pack(anchor="w", pady=(8, 4))
+
+        status_view = scrolledtext.ScrolledText(
+            header,
+            height=6,
+            wrap="word",
+            font=("JetBrains Mono", 10),
+            bg="#030611",
+            fg="#c2f1ff",
+            insertbackground="#1de5ff",
+            relief="flat",
+        )
+        status_view.pack(fill="x", expand=False)
+        status_view.configure(state="disabled")
+        self.rate_log_view = status_view
+
         filters = tk.Frame(parent, bg="#050b16")
         filters.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 10))
 
@@ -1219,13 +1242,15 @@ class TurnpointPurgerUI(tk.Tk):
         ).grid(row=0, column=0, sticky="w", padx=(0, 10))
 
         sort_options = [
-            "ServiceType (A→Z)",
-            "ServiceType (Z→A)",
-            "DefaultRate (Low→High)",
-            "DefaultRate (High→Low)",
-            "ServiceCode (A→Z)",
+            "Service Type (A→Z)",
+            "Service Type (Z→A)",
+            "ID (Low→High)",
+            "ID (High→Low)",
+            "Def. Rate (Low→High)",
+            "Def. Rate (High→Low)",
+            "Service Code (A→Z)",
             "Package (A→Z)",
-            "BillingType (A→Z)",
+            "Billing Type (A→Z)",
         ]
         sort_combo = ttk.Combobox(
             filters,
@@ -1249,7 +1274,7 @@ class TurnpointPurgerUI(tk.Tk):
 
         tk.Checkbutton(
             filters,
-            text="DefaultRate > 0",
+            text="Def. Rate > 0",
             variable=self.rate_positive_var,
             bg="#050b16",
             fg="#d8e5ff",
@@ -1260,7 +1285,7 @@ class TurnpointPurgerUI(tk.Tk):
 
         tk.Checkbutton(
             filters,
-            text="ServiceCode not empty",
+            text="Service Code not empty",
             variable=self.rate_service_code_var,
             bg="#050b16",
             fg="#d8e5ff",
@@ -1271,7 +1296,7 @@ class TurnpointPurgerUI(tk.Tk):
 
         tk.Checkbutton(
             filters,
-            text="ServiceType contains SIL",
+            text="Service Type contains SIL",
             variable=self.rate_sil_var,
             bg="#050b16",
             fg="#d8e5ff",
@@ -1329,10 +1354,10 @@ class TurnpointPurgerUI(tk.Tk):
             height=20,
             style="Atlas.Treeview",
         )
-        table.heading("service_type", text="ServiceType", anchor="w")
-        table.heading("service_type_id", text="ServiceTypeID", anchor="center")
-        table.heading("default_rate", text="DefaultRate", anchor="center")
-        table.heading("service_code", text="ServiceCode", anchor="w")
+        table.heading("service_type", text="Service Type", anchor="w")
+        table.heading("service_type_id", text="ID", anchor="center")
+        table.heading("default_rate", text="Def. Rate", anchor="center")
+        table.heading("service_code", text="Service Code", anchor="w")
         table.heading("service_type_link", text="ServiceTypeLink", anchor="w")
         table.column("service_type", width=330, anchor="w")
         table.column("service_type_id", width=130, anchor="center")
@@ -2786,6 +2811,14 @@ class TurnpointPurgerUI(tk.Tk):
                 state="disabled" if running else "normal"
             )
 
+    def _append_rate_status(self, text):
+        if not self.rate_log_view:
+            return
+        self.rate_log_view.configure(state="normal")
+        self.rate_log_view.insert("end", text + "\n")
+        self.rate_log_view.see("end")
+        self.rate_log_view.configure(state="disabled")
+
     def _clear_rate_table(self):
         if not self.rate_table:
             return
@@ -2795,10 +2828,10 @@ class TurnpointPurgerUI(tk.Tk):
         if not self.rate_table:
             return
         values = (
-            row.get("ServiceType", ""),
-            row.get("ServiceTypeID", ""),
-            row.get("DefaultRate", ""),
-            row.get("ServiceCode", ""),
+            row.get("Service Type", ""),
+            row.get("ID", ""),
+            row.get("Def. Rate", ""),
+            row.get("Service Code", ""),
             row.get("ServiceTypeLink", ""),
         )
         self.rate_table.insert("", "end", values=values)
@@ -2808,37 +2841,52 @@ class TurnpointPurgerUI(tk.Tk):
         if self.rate_deleted_no_var.get() and deleted in {"yes", "y", "true", "1", "deleted"}:
             return False
 
-        if self.rate_positive_var.get() and default_rate_numeric(row.get("DefaultRate", "")) <= 0:
+        if self.rate_positive_var.get() and default_rate_numeric(row.get("Def. Rate", "")) <= 0:
             return False
 
-        if self.rate_service_code_var.get() and not (row.get("ServiceCode") or "").strip():
+        if self.rate_service_code_var.get() and not (row.get("Service Code") or "").strip():
             return False
 
-        if self.rate_sil_var.get() and "sil" not in (row.get("ServiceType") or "").lower():
+        if self.rate_sil_var.get() and "sil" not in (row.get("Service Type") or "").lower():
             return False
 
         search = self.rate_search_var.get().strip().lower()
         if search:
-            text = f"{row.get('ServiceType', '')} {row.get('ServiceCode', '')}".lower()
+            text = (
+                f"{row.get('Service Type', '')} "
+                f"{row.get('Service Code', '')} "
+                f"{row.get('Package', '')}"
+            ).lower()
             if search not in text:
                 return False
         return True
 
     def _sorted_rate_rows(self, rows):
+        def _id_value(row):
+            raw = (row.get("ID") or "").strip()
+            try:
+                return int(raw)
+            except Exception:
+                return 0
+
         option = self.rate_sort_var.get().strip()
-        if option == "ServiceType (Z→A)":
-            return sorted(rows, key=lambda r: (r.get("ServiceType", "").lower()), reverse=True)
-        if option == "DefaultRate (Low→High)":
-            return sorted(rows, key=lambda r: default_rate_numeric(r.get("DefaultRate", "")))
-        if option == "DefaultRate (High→Low)":
-            return sorted(rows, key=lambda r: default_rate_numeric(r.get("DefaultRate", "")), reverse=True)
-        if option == "ServiceCode (A→Z)":
-            return sorted(rows, key=lambda r: (r.get("ServiceCode", "").lower()))
+        if option == "Service Type (Z→A)":
+            return sorted(rows, key=lambda r: (r.get("Service Type", "").lower()), reverse=True)
+        if option == "ID (Low→High)":
+            return sorted(rows, key=_id_value)
+        if option == "ID (High→Low)":
+            return sorted(rows, key=_id_value, reverse=True)
+        if option == "Def. Rate (Low→High)":
+            return sorted(rows, key=lambda r: default_rate_numeric(r.get("Def. Rate", "")))
+        if option == "Def. Rate (High→Low)":
+            return sorted(rows, key=lambda r: default_rate_numeric(r.get("Def. Rate", "")), reverse=True)
+        if option == "Service Code (A→Z)":
+            return sorted(rows, key=lambda r: (r.get("Service Code", "").lower()))
         if option == "Package (A→Z)":
             return sorted(rows, key=lambda r: (r.get("Package", "").lower()))
-        if option == "BillingType (A→Z)":
-            return sorted(rows, key=lambda r: (r.get("BillingType", "").lower()))
-        return sorted(rows, key=lambda r: (r.get("ServiceType", "").lower()))
+        if option == "Billing Type (A→Z)":
+            return sorted(rows, key=lambda r: (r.get("Billing Type", "").lower()))
+        return sorted(rows, key=lambda r: (r.get("Service Type", "").lower()))
 
     def _apply_rate_filters(self):
         rows = [row for row in self.rate_all_rows if self._rate_row_matches_filters(row)]
@@ -2865,8 +2913,10 @@ class TurnpointPurgerUI(tk.Tk):
         self.rate_all_rows = []
         self.rate_visible_rows = []
         self._set_rate_running(True)
-        self.rate_status_var.set("ServiceType rate capture in progress (stealth mode)...")
+        started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.rate_status_var.set(f"ServiceType rate capture in progress (started {started_at})...")
         self._enqueue_log(self._timestamp("[ServiceType→Rate] Capture started."))
+        self._append_rate_status(self._timestamp(f"Capture started at {started_at}"))
 
         def on_row(row):
             def add_row():
@@ -2877,7 +2927,9 @@ class TurnpointPurgerUI(tk.Tk):
             self.after(0, add_row)
 
         def on_progress(message):
+            stamped = self._timestamp(f"[ServiceType→Rate] {message}")
             self.after(0, lambda m=message: self.rate_status_var.set(m))
+            self.after(0, lambda t=stamped: self._append_rate_status(t))
 
         def task():
             try:
@@ -2890,13 +2942,18 @@ class TurnpointPurgerUI(tk.Tk):
                 method = result.get("method", "unknown")
                 csv_path = result.get("csv_path", "")
                 xlsx_path = result.get("xlsx_path", "")
+                selected_page_size = result.get("selected_page_size", "")
                 self.after(0, self._apply_rate_filters)
                 summary = (
-                    f"Capture complete ({method}): {len(rows)} row(s).\n"
+                    f"Capture complete ({method}, psize={selected_page_size}): {len(rows)} row(s).\n"
                     f"CSV: {csv_path}\nXLSX: {xlsx_path}"
                 )
                 self._enqueue_log(self._timestamp(f"[ServiceType→Rate] {summary}"))
                 self.after(0, lambda: self.rate_status_var.set(summary))
+                self.after(
+                    0,
+                    lambda s=summary: self._append_rate_status(self._timestamp(s)),
+                )
                 self.after(
                     0,
                     lambda: messagebox.showinfo(
@@ -2946,13 +3003,12 @@ class TurnpointPurgerUI(tk.Tk):
             return
 
         imported_rows = []
-        captured_at = datetime.now().isoformat()
         try:
             with source.open("r", newline="", encoding="utf-8-sig") as fh:
                 reader = csv.DictReader(fh)
                 for raw in reader:
-                    normalized = normalize_external_row(raw, captured_at=captured_at)
-                    if normalized.get("ServiceType"):
+                    normalized = normalize_external_row(raw)
+                    if normalized.get("Service Type"):
                         imported_rows.append(normalized)
         except Exception as exc:
             messagebox.showerror(
@@ -2971,6 +3027,11 @@ class TurnpointPurgerUI(tk.Tk):
         self._enqueue_log(
             self._timestamp(
                 f"[ServiceType→Rate] ImportCSV loaded {len(imported_rows)} row(s) from {source}"
+            )
+        )
+        self._append_rate_status(
+            self._timestamp(
+                f"ImportCSV loaded {len(imported_rows)} row(s) from {source}"
             )
         )
 

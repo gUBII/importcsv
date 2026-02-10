@@ -22,15 +22,14 @@ def test_normalize_external_row_maps_core_fields():
         "Service Code": "01_803_0115_1_1",
         "Deleted": "No",
     }
-    row = extractor.normalize_external_row(raw, captured_at="2026-01-01T00:00:00+00:00")
+    row = extractor.normalize_external_row(raw)
 
-    assert row["ServiceType"] == "(SIL) Active Night-Time"
-    assert row["ServiceTypeID"] == "12345"
-    assert row["DefaultRate"] == "$78.81"
-    assert row["ServiceCode"] == "01_803_0115_1_1"
+    assert row["Service Type"] == "(SIL) Active Night-Time"
+    assert row["ID"] == "12345"
+    assert row["Def. Rate"] == "$78.81"
+    assert row["Service Code"] == "01_803_0115_1_1"
     assert row["Deleted"] == "No"
     assert row["ServiceTypeLink"].endswith("eid=12345")
-    assert row["SourcePage"] == extractor.SERVICE_TYPES_PAGE_URL
 
 
 def test_normalize_external_row_uses_link_to_backfill_id():
@@ -38,5 +37,5 @@ def test_normalize_external_row_uses_link_to_backfill_id():
         "ServiceType": "Support Worker",
         "ServiceTypeLink": "https://tp1.com.au/service-type-details.asp?eid=99122",
     }
-    row = extractor.normalize_external_row(raw, captured_at="2026-01-01T00:00:00+00:00")
-    assert row["ServiceTypeID"] == "99122"
+    row = extractor.normalize_external_row(raw)
+    assert row["ID"] == "99122"
