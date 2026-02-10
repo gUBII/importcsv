@@ -39,3 +39,48 @@ def test_normalize_external_row_uses_link_to_backfill_id():
     }
     row = extractor.normalize_external_row(raw)
     assert row["ID"] == "99122"
+
+
+class _FakeElement:
+    def __init__(self, text="", displayed=True):
+        self.text = text
+        self._displayed = displayed
+
+    def is_displayed(self):
+        return self._displayed
+
+
+class _FakeDriver:
+    def __init__(self, *, current_url="", body_text="", password_input_count=0):
+        self.current_url = current_url
+        self._body = _FakeElement(text=body_text, displayed=True)
+        self._password_inputs = [_FakeElement(displayed=True) for _ in range(password_input_count)]
+
+    def find_element(self, by, value):
+        if by == extractor.By.TAG_NAME and value == "body":
+            return self._body
+        raise RuntimeError("unexpected find_element call")
+
+    def find_elements(self, by, value):
+        if by == extractor.By.XPATH and value == "//input[@type='password']":
+            return list(self._password_inputs)
+        return []
+
+
+def test_password_change_notice_detected_from_banner_text():
+    driver = _FakeDriver(
+        current_url="https://tp1.com.au/dashboard.asp?welcome=yes",
+        body_text="Password Change Required. Click here to change your password.",
+        password_input_count=0,
+    )
+    assert extractor._is_password_change_required(driver) is True
+    assert extractor._is_password_change_blocking(driver) is False
+
+
+def test_password_change_is_blocking_when_reset_form_visible():
+    driver = _FakeDriver(
+        current_url="https://tp1.com.au/my-account.asp?tpMSG=no&eid=36269#top2",
+        body_text="Please change your password now. New Password Confirm Password",
+        password_input_count=3,
+    )
+    assert extractor._is_password_change_blocking(driver) is True

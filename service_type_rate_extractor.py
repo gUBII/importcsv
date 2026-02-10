@@ -235,6 +235,49 @@ def _is_password_change_required(driver) -> bool:
     return any(trigger in body_text for trigger in triggers)
 
 
+def _is_password_change_blocking(driver) -> bool:
+    """
+    Detect a hard password-change gate that blocks normal navigation.
+
+    Important: dashboard warning banners are common and should not abort capture.
+    We only treat this as blocking when a visible password-reset form is present.
+    """
+    try:
+        url = _normalize_text(getattr(driver, "current_url", "")).lower()
+    except Exception:
+        url = ""
+
+    password_inputs = 0
+    try:
+        for field in driver.find_elements(By.XPATH, "//input[@type='password']"):
+            try:
+                if field.is_displayed():
+                    password_inputs += 1
+            except Exception:
+                continue
+    except Exception:
+        password_inputs = 0
+
+    if password_inputs < 2:
+        return False
+
+    if any(marker in url for marker in ("my-account", "mydetails", "change-password", "password")):
+        return True
+
+    try:
+        body_text = _normalize_text(driver.find_element(By.TAG_NAME, "body").text).lower()
+    except Exception:
+        body_text = ""
+    triggers = (
+        "password change required",
+        "change your password",
+        "update your password",
+        "new password",
+        "confirm password",
+    )
+    return any(trigger in body_text for trigger in triggers)
+
+
 def _is_authenticated(driver) -> bool:
     url = _normalize_text(getattr(driver, "current_url", "")).lower()
     if "login" in url:
@@ -695,13 +738,22 @@ def capture_service_type_rates(
         _emit("ServiceType→Rate: logging into TurnPoint.", on_progress)
         login(driver)
         if _is_password_change_required(driver):
-            raise RuntimeError("Password change required banner detected. Update TurnPoint password and retry.")
+            _emit(
+                "ServiceType→Rate warning: password-change notice detected on dashboard; continuing unless it blocks navigation.",
+                on_progress,
+            )
+        if _is_password_change_blocking(driver):
+            raise RuntimeError(
+                "Password change page is blocking automation. Update TurnPoint password and retry."
+            )
         if not _is_authenticated(driver):
             raise RuntimeError("TurnPoint authentication check failed after login.")
 
         _navigate_to_service_types_page(driver, on_progress)
-        if _is_password_change_required(driver):
-            raise RuntimeError("Password change required banner detected on Service Types page.")
+        if _is_password_change_blocking(driver):
+            raise RuntimeError(
+                "TurnPoint redirected to a password change page while opening Service Types."
+            )
 
         selected_size = _set_records_per_page(driver, on_progress)
         _set_deleted_filter_no(driver, on_progress)

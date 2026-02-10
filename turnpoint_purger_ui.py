@@ -2915,7 +2915,6 @@ class TurnpointPurgerUI(tk.Tk):
         self._set_rate_running(True)
         started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.rate_status_var.set(f"ServiceType rate capture in progress (started {started_at})...")
-        self._enqueue_log(self._timestamp("[ServiceType→Rate] Capture started."))
         self._append_rate_status(self._timestamp(f"Capture started at {started_at}"))
 
         def on_row(row):
@@ -2927,7 +2926,9 @@ class TurnpointPurgerUI(tk.Tk):
             self.after(0, add_row)
 
         def on_progress(message):
-            stamped = self._timestamp(f"[ServiceType→Rate] {message}")
+            plain = str(message or "").strip()
+            line = plain if plain.startswith("[") else f"[ServiceType→Rate] {plain}"
+            stamped = self._timestamp(line)
             self.after(0, lambda m=message: self.rate_status_var.set(m))
             self.after(0, lambda t=stamped: self._append_rate_status(t))
 
