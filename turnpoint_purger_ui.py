@@ -1,11 +1,12 @@
 import csv
+import os
 import queue
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext, simpledialog
+from tkinter import ttk, messagebox, scrolledtext, simpledialog, filedialog
 
 from PIL import Image, ImageDraw, ImageOps, ImageSequence, ImageTk
 
@@ -43,6 +44,7 @@ from worker_purger import (
     reset_worker_data,
 )
 from worker_state import get_worker_statistics
+from service_type_rate_extractor import capture_live_rates
 
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -131,6 +133,15 @@ class TurnpointPurgerUI(tk.Tk):
         self.clients_out_var = tk.StringVar(
             value=str(Path(__file__).resolve().parent / "FormatforClient(Nexis)" / "clients-data.csv")
         )
+
+        # ServiceType -> Rate Extractor state
+        self.rate_status_var = tk.StringVar(
+            value="Idle // ServiceType rate extractor ready."
+        )
+        self.rate_table = None
+        self.rate_running = False
+        self.rate_capture_button = None
+        self.rate_export_button = None
 
         configure_credentials(self.credential_username, self.credential_password)
 
@@ -279,14 +290,17 @@ class TurnpointPurgerUI(tk.Tk):
         client_tab = tk.Frame(notebook, bg="#050b16")
         worker_tab = tk.Frame(notebook, bg="#050b16")
         nexis_tab = tk.Frame(notebook, bg="#050b16")
+        rate_tab = tk.Frame(notebook, bg="#050b16")
         notebook.add(client_tab, text="Client Purger")
         notebook.add(worker_tab, text="Worker Purger")
         notebook.add(nexis_tab, text="NexisUploader (Employees)")
+        notebook.add(rate_tab, text="ServiceType → Rate Extractor")
         notebook.pack(fill="both", expand=True)
 
         self._build_client_layout(client_tab)
         self._build_worker_layout(worker_tab)
         self._build_nexis_layout(nexis_tab)
+        self._build_service_rate_layout(rate_tab)
         self._build_log_panel(container)
 
         version_badge = tk.Label(
@@ -1121,6 +1135,91 @@ class TurnpointPurgerUI(tk.Tk):
         preview.pack(fill="both", expand=True, padx=20, pady=(0, 10))
         preview.configure(state="disabled")
         self.nexis_preview = preview
+
+    def _build_service_rate_layout(self, parent):
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+
+        header = tk.Frame(parent, bg="#050b16")
+        header.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 8))
+
+        tk.Label(
+            header,
+            text="ServiceType → Rate Extractor",
+            fg="#f5fbff",
+            bg="#050b16",
+            font=("Orbitron", 24, "bold"),
+        ).pack(anchor="w")
+
+        tk.Label(
+            header,
+            text=(
+                "Read-only global reference extractor from TurnPoint Add Appointment "
+                "(client agnostic, non-purge, non-destructive)."
+            ),
+            fg="#7cc3ff",
+            bg="#050b16",
+            font=("Space Mono", 11),
+            wraplength=1000,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+
+        controls = tk.Frame(header, bg="#050b16")
+        controls.pack(anchor="w", fill="x")
+
+        self.rate_capture_button = ttk.Button(
+            controls,
+            text="Capture Live Rates",
+            style="Cyber.TButton",
+            command=self._handle_capture_live_rates,
+        )
+        self.rate_capture_button.pack(side="left", padx=(0, 10))
+
+        self.rate_export_button = ttk.Button(
+            controls,
+            text="Import CSV",
+            style="Cyber.TButton",
+            command=self._handle_rate_import_csv,
+        )
+        self.rate_export_button.pack(side="left")
+
+        tk.Label(
+            header,
+            textvariable=self.rate_status_var,
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 10),
+            wraplength=1000,
+            justify="left",
+        ).pack(anchor="w", pady=(10, 0))
+
+        table_frame = tk.Frame(parent, bg="#050b16")
+        table_frame.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 16))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+
+        columns = ("service_type", "service", "rate", "line_item_number")
+        table = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            height=20,
+            style="Atlas.Treeview",
+        )
+        table.heading("service_type", text="Service Type", anchor="w")
+        table.heading("service", text="Service", anchor="w")
+        table.heading("rate", text="Rate", anchor="center")
+        table.heading("line_item_number", text="Line Item Number", anchor="w")
+        table.column("service_type", width=420, anchor="w")
+        table.column("service", width=280, anchor="w")
+        table.column("rate", width=130, anchor="center")
+        table.column("line_item_number", width=240, anchor="w")
+
+        scroll = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
+        table.configure(yscrollcommand=scroll.set)
+        table.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.rate_table = table
 
     def _build_log_panel(self, parent):
         log_panel = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
@@ -2546,6 +2645,224 @@ class TurnpointPurgerUI(tk.Tk):
                 self.after(0, lambda: messagebox.showerror("NexisUploader", f"Upload failed:\n{exc}"))
 
         self._run_button_task(None, task)
+
+    def _set_rate_running(self, running):
+        self.rate_running = running
+        if self.rate_capture_button:
+            self.rate_capture_button.configure(
+                state="disabled" if running else "normal"
+            )
+        if self.rate_export_button:
+            self.rate_export_button.configure(
+                state="disabled" if running else "normal"
+            )
+
+    def _clear_rate_table(self):
+        if not self.rate_table:
+            return
+        self.rate_table.delete(*self.rate_table.get_children())
+
+    def _append_rate_row(self, row):
+        if not self.rate_table:
+            return
+        values = (
+            row.get("service_type", ""),
+            row.get("service", ""),
+            row.get("rate", ""),
+            row.get("line_item_number", ""),
+        )
+        self.rate_table.insert("", "end", values=values)
+
+    def _collect_rate_table_rows(self):
+        rows = []
+        if not self.rate_table:
+            return rows
+        for item in self.rate_table.get_children():
+            values = self.rate_table.item(item).get("values", [])
+            row = [
+                str(values[0]) if len(values) > 0 else "",
+                str(values[1]) if len(values) > 1 else "",
+                str(values[2]) if len(values) > 2 else "",
+                str(values[3]) if len(values) > 3 else "",
+            ]
+            rows.append(row)
+        return rows
+
+    def _handle_capture_live_rates(self):
+        if self.rate_running:
+            return
+        self._clear_rate_table()
+        self._set_rate_running(True)
+        self.rate_status_var.set("ServiceType rate capture in progress...")
+        self._enqueue_log(self._timestamp("[ServiceType→Rate] Capture started."))
+
+        def on_row(row):
+            self.after(0, lambda r=row: self._append_rate_row(r))
+
+        def on_progress(message):
+            self._enqueue_log(self._timestamp(f"[ServiceType→Rate] {message}"))
+            self.after(0, lambda m=message: self.rate_status_var.set(m))
+
+        def on_warning(message):
+            self._enqueue_log(self._timestamp(f"[ServiceType→Rate] {message}"))
+
+        def task():
+            try:
+                rows = capture_live_rates(
+                    headless=self.headless_var.get(),
+                    on_row=on_row,
+                    on_progress=on_progress,
+                    on_warning=on_warning,
+                )
+                summary = (
+                    f"ServiceType rate capture complete. Extracted {len(rows)} row(s)."
+                )
+                self._enqueue_log(self._timestamp(f"[ServiceType→Rate] {summary}"))
+                self.after(0, lambda: self.rate_status_var.set(summary))
+                self.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "ServiceType → Rate Extractor", summary
+                    ),
+                )
+            except Exception as exc:
+                error = f"ServiceType rate capture failed: {exc}"
+                self._enqueue_log(self._timestamp(f"[ServiceType→Rate] {error}"))
+                self.after(
+                    0,
+                    lambda: self.rate_status_var.set(
+                        "Capture failed. Inspect logs for details."
+                    ),
+                )
+                self.after(
+                    0,
+                    lambda: messagebox.showerror(
+                        "ServiceType → Rate Extractor", error
+                    ),
+                )
+            finally:
+                self.after(0, lambda: self._set_rate_running(False))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _handle_rate_import_csv(self):
+        if self.rate_running:
+            messagebox.showwarning(
+                "ServiceType → Rate Extractor",
+                "Wait for capture to finish before exporting.",
+            )
+            return
+        if not self._collect_rate_table_rows():
+            messagebox.showinfo(
+                "ServiceType → Rate Extractor",
+                "No rows available. Run Capture Live Rates first.",
+            )
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Import CSV")
+        dialog.configure(bg="#03060f")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        tk.Label(
+            dialog,
+            text="Choose export format",
+            fg="#a8d8ff",
+            bg="#03060f",
+            font=("Space Mono", 12, "bold"),
+        ).pack(padx=22, pady=(16, 10))
+
+        ttk.Button(
+            dialog,
+            text="Export as CSV",
+            style="Cyber.TButton",
+            command=lambda: (dialog.destroy(), self._export_service_type_rates_csv()),
+        ).pack(fill="x", padx=20, pady=(0, 8))
+
+        ttk.Button(
+            dialog,
+            text="Export as Excel",
+            style="Cyber.TButton",
+            command=lambda: (dialog.destroy(), self._export_service_type_rates_excel()),
+        ).pack(fill="x", padx=20, pady=(0, 12))
+
+        ttk.Button(
+            dialog,
+            text="Cancel",
+            style="Danger.TButton",
+            command=dialog.destroy,
+        ).pack(fill="x", padx=20, pady=(0, 16))
+
+    def _export_service_type_rates_csv(self):
+        rows = self._collect_rate_table_rows()
+        if not rows:
+            messagebox.showinfo(
+                "ServiceType → Rate Extractor",
+                "No rows to export.",
+            )
+            return
+        directory = filedialog.askdirectory(
+            title="Select export directory for ServiceType_Rates.csv",
+            parent=self,
+        )
+        if not directory:
+            return
+        output_path = Path(directory) / "ServiceType_Rates.csv"
+        with output_path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(
+                ["Service Type", "Service", "Rate", "Line Item Number"]
+            )
+            for row in rows:
+                writer.writerow(row)
+        self._enqueue_log(
+            self._timestamp(f"[ServiceType→Rate] CSV exported -> {output_path}")
+        )
+        messagebox.showinfo(
+            "ServiceType → Rate Extractor",
+            f"Exported CSV to:\n{output_path}",
+        )
+
+    def _export_service_type_rates_excel(self):
+        rows = self._collect_rate_table_rows()
+        if not rows:
+            messagebox.showinfo(
+                "ServiceType → Rate Extractor",
+                "No rows to export.",
+            )
+            return
+        directory = filedialog.askdirectory(
+            title="Select export directory for ServiceType_Rates.xlsx",
+            parent=self,
+        )
+        if not directory:
+            return
+        output_path = Path(directory) / "ServiceType_Rates.xlsx"
+        try:
+            from openpyxl import Workbook
+        except Exception as exc:
+            messagebox.showerror(
+                "ServiceType → Rate Extractor",
+                f"Excel export requires openpyxl:\n{exc}",
+            )
+            return
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "ServiceType Rates"
+        sheet.append(["Service Type", "Service", "Rate", "Line Item Number"])
+        for row in rows:
+            sheet.append(row)
+        workbook.save(output_path)
+
+        self._enqueue_log(
+            self._timestamp(f"[ServiceType→Rate] Excel exported -> {output_path}")
+        )
+        messagebox.showinfo(
+            "ServiceType → Rate Extractor",
+            f"Exported Excel to:\n{output_path}",
+        )
 
     def _notify_completion(self, success, output=None, error=None):
         def finalize():
