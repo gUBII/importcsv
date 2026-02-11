@@ -21,13 +21,11 @@ from importcsv import (
     collect_clients_by_package,
     PACKAGE_MANIFEST_PATH,
     PACKAGE_FALLBACK_NAMES,
-    run_client_batch,
     run_turnpoint_purge,
     set_log_sink,
     set_operator_name,
     reset_purge_data,
     configure_credentials,
-    ensure_credentials,
     RUNTIME_USERNAME,
     RUNTIME_PASSWORD,
 )
@@ -38,7 +36,6 @@ from worker_purger import (
     WORKER_MANIFEST_PATH,
     collect_workers,
     download_worker_excel,
-    load_worker_manifest,
     run_worker_batch as run_worker_batch,
     run_worker_purge,
     reset_worker_data,
@@ -2792,7 +2789,12 @@ class TurnpointPurgerUI(tk.Tk):
                 self.after(0, lambda: messagebox.showinfo("NexisUploader", f"Uploaded {record.full_name} to Nexis."))
             except Exception as exc:
                 self._enqueue_log(self._timestamp(f"Nexis upload failed: {exc}"))
-                self.after(0, lambda: messagebox.showerror("NexisUploader", f"Upload failed:\n{exc}"))
+                self.after(
+                    0,
+                    lambda err=str(exc): messagebox.showerror(
+                        "NexisUploader", f"Upload failed:\n{err}"
+                    ),
+                )
 
         self._run_button_task(None, task)
 
@@ -2927,7 +2929,10 @@ class TurnpointPurgerUI(tk.Tk):
 
         def on_progress(message):
             plain = str(message or "").strip()
-            line = plain if plain.startswith("[") else f"[ServiceType→Rate] {plain}"
+            if plain.startswith("[") or plain.startswith("ServiceType→Rate"):
+                line = plain
+            else:
+                line = f"[ServiceType→Rate] {plain}"
             stamped = self._timestamp(line)
             self.after(0, lambda m=message: self.rate_status_var.set(m))
             self.after(0, lambda t=stamped: self._append_rate_status(t))

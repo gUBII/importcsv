@@ -15,8 +15,6 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 from importcsv import (
     log_message,
-    set_log_sink,
-    configure_credentials,
     ensure_credentials,
     normalize_label,
     sanitize_csv_value,
@@ -27,7 +25,6 @@ from worker_state import (
     record_worker_event,
     get_worker_last_purge,
     reset_worker_state,
-    get_worker_statistics,
 )
 
 BASE_URL = "https://tp1.com.au/"
@@ -710,7 +707,7 @@ def run_worker_purge(worker_id, worker_name=None, worker_team=None, headless=Fal
 
     try:
         ensure_credentials()
-        from importcsv import login, set_operator_name, OPERATOR_NAME  # noqa: WPS433
+        from importcsv import login, set_operator_name, OPERATOR_NAME  # noqa: PLC0415
 
         set_operator_name(OPERATOR_NAME)
         login(driver)

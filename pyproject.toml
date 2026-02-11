@@ -25,6 +25,7 @@ turnpoint-budgeter = "NDISBUDGETER:generate_budget_exports"
 [tool.setuptools]
 py-modules = [
     "importcsv",
+    "appointment_item_discovery",
     "turnpoint_purger_ui",
     "NDISBUDGETER",
     "purger_state",

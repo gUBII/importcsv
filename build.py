@@ -11,6 +11,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -33,7 +34,29 @@ def ensure_pyinstaller():
         )
 
 
-def run_spec(spec_path: Path):
+def _sync_root_aliases(dist_dir: Path):
+    """
+    Keep convenience launch artifacts in `dist/` in sync with the platform folder.
+    """
+    root_dist = ROOT / "dist"
+    root_dist.mkdir(parents=True, exist_ok=True)
+    if dist_dir.resolve() == root_dist.resolve():
+        return
+
+    for binary_name in ("TurnpointPurger", "TurnpointPurgerCLI"):
+        source = dist_dir / binary_name
+        if source.exists():
+            shutil.copy2(source, root_dist / binary_name)
+
+    app_source = dist_dir / "TurnpointPurger.app"
+    app_target = root_dist / "TurnpointPurger.app"
+    if app_source.exists():
+        if app_target.exists():
+            shutil.rmtree(app_target)
+        shutil.copytree(app_source, app_target)
+
+
+def run_spec(spec_path: Path) -> Path:
     if not spec_path.exists():
         raise SystemExit(f"Spec file not found: {spec_path}")
     import PyInstaller.__main__
@@ -49,6 +72,7 @@ def run_spec(spec_path: Path):
 
     PyInstaller.__main__.run(
         [
+            "--noconfirm",
             "--distpath",
             str(dist_dir),
             "--workpath",
@@ -56,6 +80,8 @@ def run_spec(spec_path: Path):
             str(spec_path),
         ]
     )
+    _sync_root_aliases(dist_dir)
+    return dist_dir
 
 
 def main():
@@ -71,13 +97,18 @@ def main():
 
     if args.gui:
         print("Building GUI bundle (turnpoint_gui.spec)...")
-        run_spec(SPEC_GUI)
-        print("GUI build complete -> dist/TurnpointPurger")
+        dist_dir = run_spec(SPEC_GUI)
+        gui_path = dist_dir / "TurnpointPurger"
+        app_path = dist_dir / "TurnpointPurger.app"
+        print(f"GUI build complete -> {gui_path}")
+        if app_path.exists():
+            print(f"GUI app bundle -> {app_path}")
 
     if args.cli:
         print("Building CLI bundle (turnpoint_cli.spec)...")
-        run_spec(SPEC_CLI)
-        print("CLI build complete -> dist/TurnpointPurgerCLI")
+        dist_dir = run_spec(SPEC_CLI)
+        cli_path = dist_dir / "TurnpointPurgerCLI"
+        print(f"CLI build complete -> {cli_path}")
 
 
 if __name__ == "__main__":

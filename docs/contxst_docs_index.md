@@ -1,22 +1,15 @@
 # Repository Context Documentation Index
 
 ## Why this document set exists
-This repository has grown from a single client purge script into a multi-surface automation suite:
-- Client data extraction and archival from TurnPoint.
-- Worker data extraction and archival from TurnPoint.
-- Nexis payload generation and upload assistance.
-- Packaging scripts for distributable GUI/CLI builds.
+This repository is a Selenium-based operations toolkit for TurnPoint and Nexis workflows. The docs in this folder are the current baseline for engineering and operations.
 
-This index is the entry point for the full context pack. Every document in this set uses the requested naming format (`contxst_{docname}.md`) and lives in `docs/`.
-
-## Scope of this context refresh
-This documentation was assembled by reading source-of-truth code and runtime files in the repository, not only the previous markdown docs. It covers:
-- Core runtime modules.
-- GUI and CLI flows.
-- State persistence model.
-- Build and packaging flow.
-- Testing footprint and known gaps.
-- Risks and practical recommendations.
+## Scope of the current baseline
+This set reflects the implemented code as of today, including:
+- Client and worker purge pipelines.
+- PDCC purgeable/bundle/manifest workflows.
+- Service Type reference extraction (`service_type_rate_extractor.py`).
+- Appointment-driven item-number discovery + service-type enrichment (`appointment_item_discovery.py`).
+- CLI and build/distribution behavior.
 
 ## Reading order
 1. `docs/contxst_repository_overview.md`
@@ -29,16 +22,17 @@ This documentation was assembled by reading source-of-truth code and runtime fil
 8. `docs/contxst_risks_and_recommendations.md`
 
 ## Fast orientation
-If you only need the short version:
-- Entry points are `importcsv.py` (CLI), `turnpoint_purger_ui.py` (GUI), `worker_purger.py` (worker flow), and `nexis_uploader.py`/`nexis_submitter.py` (Nexis mapping + submission).
-- Primary persistent state is JSON under `~/.turnpoint_purger/`.
-- Primary archive roots are `~/PurgedClients` and `~/PurgedWorker` unless overridden by env vars.
-- Package discovery and bundle exports are stored under the PDCC directory (`Purged Client/Package Divided Client Credential (PDCC)`).
+- CLI entrypoint: `importcsv.py` (`turnpoint-purger-cli`).
+- GUI entrypoint: `turnpoint_purger_ui.py` (`turnpoint-purger-gui`).
+- New discovery module: `appointment_item_discovery.py`.
+- Core archives: `~/PurgedClients`, `~/PurgedWorker`, and PDCC root.
+- New diagnostics for item discovery:
+  - `ServiceTypeRateExtractor/diagnostics/<run_id>/events.jsonl`
+  - `ServiceTypeRateExtractor/diagnostics/<run_id>/checkers.csv`
+  - `ServiceTypeRateExtractor/diagnostics/<run_id>/summary.json`
 
-## Notes on legacy docs
-This repository already contains prior documentation artifacts:
+## Legacy docs note
+These files still exist and are kept aligned at a high level:
 - `docs/TurnpointPurger_Notes.md`
 - `docs/TurnpointPurger_Technical_Documentation.md`
 - `docs/TurnpointPurger Automation Suite – Technical Documentation.docx`
-
-Those files remain useful historical context, but this `contxst_*.md` set is intended to be the current working baseline for engineering and operations.

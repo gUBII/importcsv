@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import service_type_rate_extractor as extractor
+import service_type_rate_extractor as extractor  # noqa: E402
 
 
 def test_default_rate_numeric_strips_currency_and_commas():
@@ -51,10 +51,18 @@ class _FakeElement:
 
 
 class _FakeDriver:
-    def __init__(self, *, current_url="", body_text="", password_input_count=0):
+    def __init__(
+        self,
+        *,
+        current_url="",
+        body_text="",
+        password_input_count=0,
+        login_error_text="",
+    ):
         self.current_url = current_url
         self._body = _FakeElement(text=body_text, displayed=True)
         self._password_inputs = [_FakeElement(displayed=True) for _ in range(password_input_count)]
+        self._login_error = _FakeElement(text=login_error_text, displayed=True) if login_error_text else None
 
     def find_element(self, by, value):
         if by == extractor.By.TAG_NAME and value == "body":
@@ -64,6 +72,12 @@ class _FakeDriver:
     def find_elements(self, by, value):
         if by == extractor.By.XPATH and value == "//input[@type='password']":
             return list(self._password_inputs)
+        if by == extractor.By.XPATH and value in {
+            "//td[contains(@class,'red')]",
+            "//*[contains(@class,'error')]",
+            "//div[contains(@class,'error')]",
+        }:
+            return [self._login_error] if self._login_error else []
         return []
 
 
@@ -84,3 +98,12 @@ def test_password_change_is_blocking_when_reset_form_visible():
         password_input_count=3,
     )
     assert extractor._is_password_change_blocking(driver) is True
+
+
+def test_login_failure_hint_detects_rejected_credentials():
+    driver = _FakeDriver(
+        current_url="https://tp1.com.au/login.asp",
+        body_text="The Email and/or password you entered is incorrect. Please try again",
+        login_error_text="The Email and/or password you entered is incorrect. Please try again",
+    )
+    assert extractor._login_failure_hint(driver) == "TurnPoint rejected credentials (email/password incorrect)."

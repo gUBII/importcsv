@@ -84,6 +84,38 @@ flowchart TD
 - De-duplicate client IDs across packages.
 - Persist `package_manifest.csv` with deterministic row order.
 
+## Appointment discovery dataflow (`appointment_item_discovery.py`)
+
+### Route resolution
+- Login using shared `importcsv.py` auth helpers.
+- Attempt Assist bridge route first:
+  - `https://tp1.com.au/appointments-all.asp`
+  - redirect into `https://assist.turnpoint.co/appointments`
+  - navigate to `https://assist.turnpoint.co/appointments/new`
+- If Assist route is unavailable or stalls at auth/login, fallback to legacy appointment URLs.
+
+### Assist extraction path
+- Verify page readiness (`Appointment Details - New`).
+- Probe `client_id` and `service_type_id` React comboboxes with checker instrumentation.
+- Treat empty option sets as warn+continue (`CHK_DROPDOWN_EMPTY`) and capture artifacts.
+- Extract option rows as `{label, value}` where `value` is used as `Service Type ID`.
+
+### Item-number enrichment path
+- For each discovered `Service Type ID`, open `service-type-details.asp?eid=<id>`.
+- Parse:
+  - `ef581` -> item number / service code
+  - `ef592` -> default rate
+- Cache per-`eid` lookups to avoid repeated page fetches.
+
+### Merge path
+- Merge discovery output with `ServiceTypes_latest.csv`.
+- Match precedence:
+  - exact `Service Variant Label` to `Service Type`
+  - fallback by `Service Type ID` to `ID`
+- Rate precedence:
+  - discovery payload/details-derived rate first
+  - fallback to reference `Def. Rate`
+
 ## Worker pipeline dataflow (`worker_purger.py`)
 
 ### Discovery
@@ -130,6 +162,10 @@ flowchart TD
 ### Logging
 - `importcsv.log_message` is the shared logger.
 - UI injects a log sink callback to stream live output into the text area.
+- Appointment discovery additionally writes structured diagnostics per run:
+  - `events.jsonl` (event schema with code/step/context)
+  - `checkers.csv` (pass/fail/warn checkpoints)
+  - `summary.json` (aggregate counters and output paths)
 
 ### State and idempotency
 - Client duplicates are explicit and can be overridden.

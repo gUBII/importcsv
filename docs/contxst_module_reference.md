@@ -26,12 +26,51 @@ This document maps each important module to its real responsibilities, major fun
   - `load_client_manifest`
   - `build_batch_queue`
   - `run_client_batch`
+- Appointment discovery CLI orchestration:
+  - `--discover-item-numbers`
+  - `--probe-client-id`
+  - `--merge-service-types`
+  - `--discovery-debug`
 - CLI parsing: `parse_cli_args`, `main`.
 
 ### Behavioral notes
 - Uses many global runtime variables for context (`CLIENT_ID`, `OUTPUT_DIR`, `FILE_PREFIX`, credentials).
 - Continues extraction on per-page failures (logs errors, does not immediately abort the full run).
 - Finalization and state updates occur after browser teardown.
+
+## `appointment_item_discovery.py` (appointment-driven discovery + enrichment)
+
+### What it owns
+- Assist-first appointment route discovery with legacy fallback.
+- Service-type option discovery from legacy `<select>` and Assist React comboboxes.
+- Structured diagnostics (`events.jsonl`, `checkers.csv`, `summary.json`) with screenshot/HTML artifacts.
+- Details-page enrichment from `service-type-details.asp?eid=<id>` for item number and rate.
+- Merge workflow with `ServiceTypes_latest.csv`.
+
+### Core functions
+- Discovery pipeline:
+  - `discover_appointment_item_numbers(...)`
+  - `_open_assist_appointments_new(...)`
+  - `_inspect_assist_service_options(...)`
+  - `_inspect_dropdown(...)` (legacy path)
+- Enrichment:
+  - `_fetch_service_type_details(...)`
+  - `_dedupe_discovery_rows(...)`
+  - `count_item_number_coverage(...)`
+- Merge/export:
+  - `merge_discovery_with_service_types(...)`
+  - `run_service_type_merge(...)`
+  - `load_discovery_latest(...)`
+
+### Output contract
+- Discovery:
+  - `AppointmentItemDiscovery_latest.csv`
+  - `AppointmentItemDiscovery_latest.xlsx`
+- Merge:
+  - `ServiceTypes_enriched_latest.csv/.xlsx`
+  - `ServiceTypes_unmatched_discovery_latest.csv/.xlsx`
+- Diagnostics per run under:
+  - `~/PurgedClients/ServiceTypeRateExtractor/diagnostics/<run_id>/`
 
 ## `turnpoint_purger_ui.py` (Tkinter app)
 
@@ -167,6 +206,7 @@ Per worker archive typically contains:
 - JS click helper.
 
 ## Tests
+- `tests/test_appointment_item_discovery.py`
 - `tests/test_package_collector.py`
 - `tests/test_purgeable_helpers.py`
 

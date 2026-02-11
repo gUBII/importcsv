@@ -1,14 +1,13 @@
 import os
 import time
-from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 from selenium import webdriver  # type: ignore
 from selenium.webdriver.common.by import By  # type: ignore
 from selenium.webdriver.support.ui import WebDriverWait, Select  # type: ignore
 from selenium.webdriver.support import expected_conditions as EC  # type: ignore
 
-from selenium_helpers import click_js, retry, wait_for
+from selenium_helpers import click_js
 
 
 BASE_URL = "https://nexis365.com/cohs"

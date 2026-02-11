@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import importcsv
+import importcsv  # noqa: E402
 
 
 def test_resolve_purgeable_clients_url_prefers_override(monkeypatch):

@@ -46,6 +46,31 @@ Optional:
 - `--package "NDIS - Plan Managed"` (repeatable / comma-separated)
 - `--manifest <output_manifest_path>`
 
+### Appointment item-number discovery (Assist + legacy fallback)
+```bash
+python importcsv.py --discover-item-numbers --probe-client-id 56851 --headless
+```
+Optional:
+- `--discovery-debug` for per-query/per-option debug events in diagnostics.
+
+Behavior notes:
+- `--probe-client-id` is required by CLI for discovery runs.
+- Assist route is attempted first; legacy URLs are used only as fallback.
+- Discovery diagnostics are written to:
+  - `~/PurgedClients/ServiceTypeRateExtractor/diagnostics/<run_id>/events.jsonl`
+  - `~/PurgedClients/ServiceTypeRateExtractor/diagnostics/<run_id>/checkers.csv`
+  - `~/PurgedClients/ServiceTypeRateExtractor/diagnostics/<run_id>/summary.json`
+
+### Merge latest discovery with Service Types reference
+```bash
+python importcsv.py --merge-service-types
+```
+
+Combined run:
+```bash
+python importcsv.py --discover-item-numbers --probe-client-id 56851 --merge-service-types --headless
+```
+
 ## Worker workflows (`worker_purger.py` via UI)
 Worker collection and purge are exposed primarily through the GUI, but core functions support script-level invocation:
 - `collect_workers(...)`

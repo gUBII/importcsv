@@ -1,0 +1,17 @@
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+
+# OS / editor noise
+.DS_Store
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local env/config
+.env

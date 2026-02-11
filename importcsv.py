@@ -1097,7 +1097,7 @@ def find_purgeable_clients(headless=False, limit=10000, purgeable_url=None):
     driver = build_chrome_driver(headless=headless, download_dir=PDCC_DOWNLOADS_DIR)
     try:
         login(driver)
-        excel_path = _download_purgeable_clients_excel(
+        _download_purgeable_clients_excel(
             driver,
             limit=limit,
             download_dir=PDCC_DOWNLOADS_DIR,
@@ -1543,6 +1543,25 @@ def parse_cli_args():
         action="store_true",
         help="Crawl clients.asp for each package and generate a package manifest CSV.",
     )
+    parser.add_argument(
+        "--discover-item-numbers",
+        action="store_true",
+        help="Run appointment-driven discovery to capture service variant item numbers.",
+    )
+    parser.add_argument(
+        "--probe-client-id",
+        help="Probe client ID (or comma-separated IDs) used to open appointment context during discovery.",
+    )
+    parser.add_argument(
+        "--merge-service-types",
+        action="store_true",
+        help="Merge appointment discovery output with ServiceTypes_latest.csv reference export.",
+    )
+    parser.add_argument(
+        "--discovery-debug",
+        action="store_true",
+        help="Emit verbose per-option discovery events.",
+    )
     return parser.parse_args()
 
 
@@ -1577,6 +1596,55 @@ def main():
             overwrite=args.update_bundle,
             purgeable_url=purgeable_url,
         )
+        return
+
+    if args.discover_item_numbers or args.merge_service_types:
+        from appointment_item_discovery import (
+            discover_appointment_item_numbers,
+            load_discovery_latest,
+            run_service_type_merge,
+        )
+
+        discovered_rows = []
+        if args.discover_item_numbers:
+            if not (args.probe_client_id or "").strip():
+                raise SystemExit(
+                    "Item discovery requires --probe-client-id in Assist mode. "
+                    "Example: --discover-item-numbers --probe-client-id 56851"
+                )
+            discovery_result = discover_appointment_item_numbers(
+                headless=args.headless,
+                probe_client_id=args.probe_client_id,
+                on_progress=None,
+                on_event=None,
+                discovery_debug=args.discovery_debug,
+            )
+            discovered_rows = list(discovery_result.get("rows", []) or [])
+            log_message(
+                "Item discovery complete: "
+                f"{discovery_result.get('row_count', 0)} row(s) | "
+                f"events={discovery_result.get('events_path')} | "
+                f"checkers={discovery_result.get('checkers_path')} | "
+                f"summary={discovery_result.get('summary_path')}"
+            )
+
+        if args.merge_service_types:
+            if not discovered_rows:
+                discovered_rows = load_discovery_latest()
+                log_message(
+                    f"Loaded discovery rows from latest CSV: {len(discovered_rows)} row(s)."
+                )
+
+            merged = run_service_type_merge(discovered_rows, progress=None)
+            log_message(
+                "Service type merge complete: "
+                f"enriched={merged.get('enriched_count', 0)} | "
+                f"unmatched={merged.get('unmatched_count', 0)}"
+            )
+            log_message(
+                f"Enriched CSV: {merged.get('enriched_latest_csv')} | "
+                f"Unmatched CSV: {merged.get('unmatched_latest_csv')}"
+            )
         return
 
     batch_mode = bool(packages or args.all_clients)

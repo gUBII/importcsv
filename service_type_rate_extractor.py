@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 
@@ -296,6 +296,47 @@ def _is_authenticated(driver) -> bool:
     return True
 
 
+def _login_failure_hint(driver) -> str:
+    try:
+        url = _normalize_text(getattr(driver, "current_url", "")).lower()
+    except Exception:
+        url = ""
+    if "login.asp" not in url:
+        return ""
+
+    selectors = [
+        "//td[contains(@class,'red')]",
+        "//*[contains(@class,'error')]",
+        "//div[contains(@class,'error')]",
+    ]
+    for xpath in selectors:
+        try:
+            elems = driver.find_elements(By.XPATH, xpath)
+        except Exception:
+            elems = []
+        for elem in elems:
+            try:
+                if not elem.is_displayed():
+                    continue
+                text = _normalize_text(elem.text)
+                if text:
+                    if "incorrect" in text.lower() and "password" in text.lower():
+                        return "TurnPoint rejected credentials (email/password incorrect)."
+                    return text
+            except Exception:
+                continue
+
+    try:
+        body_text = _normalize_text(driver.find_element(By.TAG_NAME, "body").text).lower()
+    except Exception:
+        body_text = ""
+    if "incorrect" in body_text and "password" in body_text:
+        return "TurnPoint rejected credentials (email/password incorrect)."
+    if "login" in body_text and "required" in body_text:
+        return "TurnPoint login required."
+    return ""
+
+
 def _navigate_to_service_types_page(driver, progress: ProgressCallback = None):
     _emit("ServiceType→Rate: navigating to service-types page.", progress)
     driver.get(SERVICE_TYPES_PAGE_URL)
@@ -319,25 +360,52 @@ def _find_service_types_table(driver):
                 continue
         except Exception:
             continue
-        headers = table.find_elements(By.XPATH, ".//thead//th|.//thead//td")
-        if not headers:
-            headers = table.find_elements(By.XPATH, ".//tr[1]/th|.//tr[1]/td")
-        tokens = [_normalize_token(h.text) for h in headers]
-        has_service = any(token == "servicetype" for token in tokens)
-        has_id = any(token == "id" for token in tokens)
-        if has_service and has_id:
+        # TurnPoint often renders a title row first (without the real column headers),
+        # so do not rely on first-row header cells only.
+        header_cells = table.find_elements(By.XPATH, ".//th")
+        header_tokens = [_normalize_token(cell.text) for cell in header_cells if _normalize_text(cell.text)]
+        has_service_header = any(token == "servicetype" for token in header_tokens)
+        has_id_header = any(token == "id" for token in header_tokens)
+        if has_service_header and has_id_header:
+            return table
+
+        # Fallback: identify the data grid by details links even if header markup differs.
+        detail_links = table.find_elements(
+            By.XPATH,
+            ".//a[contains(@href,'service-type-details.asp') and contains(@href,'eid=')]",
+        )
+        if detail_links:
             return table
     return None
 
 
-def _wait_for_table_rows(driver, timeout: int = 20):
+def _wait_for_table_rows(driver, timeout: int = 45):
     deadline = time.time() + timeout
     while time.time() < deadline:
         table = _find_service_types_table(driver)
         if table is None:
+            # Secondary fallback: detect visible details links first and climb to table.
+            detail_links = driver.find_elements(
+                By.XPATH,
+                "//a[contains(@href,'service-type-details.asp') and contains(@href,'eid=')]",
+            )
+            for link in detail_links:
+                try:
+                    if not link.is_displayed():
+                        continue
+                    table = link.find_element(By.XPATH, "./ancestor::table[1]")
+                    break
+                except Exception:
+                    continue
+        if table is None:
             time.sleep(0.25)
             continue
-        rows = table.find_elements(By.XPATH, ".//tbody/tr[td]")
+        rows = table.find_elements(
+            By.XPATH,
+            ".//tr[td and .//a[contains(@href,'service-type-details.asp') and contains(@href,'eid=')]]",
+        )
+        if not rows:
+            rows = table.find_elements(By.XPATH, ".//tbody/tr[td]")
         if not rows:
             rows = table.find_elements(By.XPATH, ".//tr[td]")
         if rows:
@@ -433,7 +501,7 @@ def _refresh_search_results(driver, progress: ProgressCallback = None):
     if not clicked:
         raise RuntimeError("SEARCH button was not found on Service Types page.")
     _emit("ServiceType→Rate: search submitted; waiting for results.", progress)
-    _wait_for_table_rows(driver, timeout=20)
+    _wait_for_table_rows(driver, timeout=45)
 
 
 def _find_export_control(driver):
@@ -477,6 +545,8 @@ def _download_export_file(driver, download_dir: Path, progress: ProgressCallback
 def _table_header_index_map(table) -> Dict[str, int]:
     headers = table.find_elements(By.XPATH, ".//thead//th|.//thead//td")
     if not headers:
+        headers = table.find_elements(By.XPATH, ".//th")
+    if not headers:
         headers = table.find_elements(By.XPATH, ".//tr[1]/th|.//tr[1]/td")
 
     mapping: Dict[str, int] = {}
@@ -516,7 +586,12 @@ def _extract_rows_from_html_table(table, on_row: RowCallback = None) -> List[Dic
         raise RuntimeError(
             "HTML fallback table missing required headers 'Service Type' and/or 'ID'."
         )
-    rows = table.find_elements(By.XPATH, ".//tbody/tr[td]")
+    rows = table.find_elements(
+        By.XPATH,
+        ".//tr[td and .//a[contains(@href,'service-type-details.asp') and contains(@href,'eid=')]]",
+    )
+    if not rows:
+        rows = table.find_elements(By.XPATH, ".//tbody/tr[td]")
     if not rows:
         rows = table.find_elements(By.XPATH, ".//tr[td]")
 
@@ -736,7 +811,13 @@ def capture_service_type_rates(
 
     try:
         _emit("ServiceType→Rate: logging into TurnPoint.", on_progress)
-        login(driver)
+        try:
+            login(driver)
+        except Exception as login_exc:
+            hint = _login_failure_hint(driver)
+            if hint:
+                raise RuntimeError(f"TurnPoint login failed: {hint}") from login_exc
+            raise RuntimeError("TurnPoint login failed before reaching dashboard.") from login_exc
         if _is_password_change_required(driver):
             _emit(
                 "ServiceType→Rate warning: password-change notice detected on dashboard; continuing unless it blocks navigation.",
@@ -747,6 +828,9 @@ def capture_service_type_rates(
                 "Password change page is blocking automation. Update TurnPoint password and retry."
             )
         if not _is_authenticated(driver):
+            hint = _login_failure_hint(driver)
+            if hint:
+                raise RuntimeError(f"TurnPoint authentication check failed after login: {hint}")
             raise RuntimeError("TurnPoint authentication check failed after login.")
 
         _navigate_to_service_types_page(driver, on_progress)
