@@ -1521,7 +1521,8 @@ class TurnpointPurgerUI(tk.Tk):
             "copy",
         )
         self.truth_grid.set_options(
-            font=("JetBrains Mono", 10),
+            # tksheet requires a 3-part tuple: (family, size, style).
+            font=("JetBrains Mono", 10, "normal"),
             header_font=("Space Mono", 10, "bold"),
             table_bg="#0a1324",
             table_fg="#e9f2ff",
