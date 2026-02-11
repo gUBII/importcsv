@@ -5,55 +5,87 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import turnpoint_purger_ui as ui  # noqa: E402
+from truth_store import TruthStore  # noqa: E402
 
 
-def test_rate_table_columns_for_metadata_mode():
-    columns = ui.rate_table_columns_for_mode(ui.RATE_MODE_METADATA)
-    ids = [item["id"] for item in columns]
-    assert ids == [
-        "service_type",
-        "service_type_id",
-        "default_rate",
-        "service_code",
-        "service_type_link",
-    ]
-
-
-def test_rate_table_columns_for_discovery_mode():
-    columns = ui.rate_table_columns_for_mode(ui.RATE_MODE_DISCOVERY)
-    ids = [item["id"] for item in columns]
-    assert ids == ui.DISCOVERY_TABLE_FIELDS
-
-
-def test_normalize_discovery_row_for_table():
-    row = {
-        "Parent Service Type": "Support",
-        "Service Variant Label": "Weekday Day",
-        "Service Type ID": 7358,
-        "Item Number": "01_404_0104_1_1",
-    }
-    normalized = ui.normalize_discovery_row_for_table(row)
-    assert normalized["Parent Service Type"] == "Support"
-    assert normalized["Service Variant Label"] == "Weekday Day"
-    assert normalized["Service Type ID"] == "7358"
-    assert normalized["Item Number"] == "01_404_0104_1_1"
-    assert normalized["Rate Source"] == ""
-
-
-def test_discovery_row_matches_search():
-    row = {
-        "Parent Service Type": "Assistance",
-        "Service Variant Label": "Weekday Night",
-        "Service Type ID": "7358",
-        "Item Number": "01_404_0104_1_1",
+def test_truth_store_upsert_reference():
+    store = TruthStore()
+    store.upsert_reference({
+        "ID": "7358",
+        "Service Type": "Weekday Day",
+        "Def. Rate": "149.57",
         "Service Code": "01_404_0104_1_1",
+    })
+    rec = store.get_record("7358")
+    assert rec is not None
+    assert rec.service_type_id == "7358"
+    assert rec.truth_rate == "149.57"
+    assert rec.truth_rate_source == "reference"
+    assert rec.service_variant_label == "Weekday Day"
+    assert rec.status == "blue"  # has both rate and item
+
+
+def test_truth_store_upsert_discovery():
+    store = TruthStore()
+    store.upsert_discovery({
+        "Service Type ID": "7358",
+        "Parent Service Type": "Assistance",
+        "Service Variant Label": "Weekday Day",
         "Rate": "149.57",
-        "Rate Source": "service_type_details",
-        "Source Client ID": "56851",
-        "Captured At (UTC)": "2026-02-11T00:00:00+00:00",
-    }
-    assert ui.discovery_row_matches_search(row, "weekday")
-    assert ui.discovery_row_matches_search(row, "149.57")
-    assert ui.discovery_row_matches_search(row, "56851")
-    assert not ui.discovery_row_matches_search(row, "not-present")
+        "Item Number": "01_404_0104_1_1",
+    })
+    rec = store.get_record("7358")
+    assert rec is not None
+    assert rec.parent_service_type == "Assistance"
+    assert rec.service_variant_label == "Weekday Day"
+    assert rec.truth_rate == "149.57"
+    assert rec.truth_item_number == "01_404_0104_1_1"
+    assert rec.status == "blue"
+
+
+def test_truth_store_conflict_detection():
+    store = TruthStore()
+    store.upsert_reference({
+        "ID": "7358",
+        "Service Type": "Weekday Day",
+        "Def. Rate": "149.57",
+    })
+    store.upsert_discovery({
+        "Service Type ID": "7358",
+        "Rate": "155.00",
+    })
+    rec = store.get_record("7358")
+    assert rec is not None
+    assert rec.rate_conflict is True
+    # Discovery takes precedence over reference
+    assert rec.truth_rate == "155.00"
+    assert rec.truth_rate_source == "discovery"
+
+
+def test_truth_store_status_counts():
+    store = TruthStore()
+    # RED: neither rate nor item
+    store.upsert_discovery({
+        "Service Type ID": "1000",
+        "Parent Service Type": "Group A",
+        "Service Variant Label": "No Data",
+    })
+    # YELLOW: rate only
+    store.upsert_discovery({
+        "Service Type ID": "2000",
+        "Parent Service Type": "Group A",
+        "Service Variant Label": "Rate Only",
+        "Rate": "50.00",
+    })
+    # BLUE: both
+    store.upsert_discovery({
+        "Service Type ID": "3000",
+        "Parent Service Type": "Group B",
+        "Service Variant Label": "Both",
+        "Rate": "75.00",
+        "Item Number": "01_234",
+    })
+    counts = store.get_status_counts()
+    assert counts["red"] == 1
+    assert counts["yellow"] == 1
+    assert counts["blue"] == 1
