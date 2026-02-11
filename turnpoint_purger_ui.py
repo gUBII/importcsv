@@ -1278,15 +1278,17 @@ class TurnpointPurgerUI(tk.Tk):
         self.nexis_preview = preview
 
     def _build_service_rate_layout(self, parent):
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(2, weight=1)
+        parent.columnconfigure(0, weight=4)
+        parent.columnconfigure(1, weight=1)
+        parent.rowconfigure(3, weight=1)
 
+        # ---- HEADER ----
         header = tk.Frame(parent, bg="#050b16")
-        header.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 8))
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=24, pady=(20, 8))
 
         tk.Label(
             header,
-            text="ServiceType → Rate Extractor",
+            text="ServiceType \u2192 Rate Extractor",
             fg="#f5fbff",
             bg="#050b16",
             font=("Orbitron", 24, "bold"),
@@ -1295,8 +1297,8 @@ class TurnpointPurgerUI(tk.Tk):
         tk.Label(
             header,
             text=(
-                "Global Service Types capture (read-only, non-purge, non-destructive). "
-                "Source: service-types.asp with export-first + HTML fallback."
+                "Truth Table: real-time conflict detection + multi-source rate resolution. "
+                "Outputs: ~/LineItemRates/ServiceTypeTruth/"
             ),
             fg="#7cc3ff",
             bg="#050b16",
@@ -1305,6 +1307,7 @@ class TurnpointPurgerUI(tk.Tk):
             justify="left",
         ).pack(anchor="w", pady=(4, 10))
 
+        # ---- ACTION BUTTONS ----
         actions = tk.Frame(header, bg="#050b16")
         actions.pack(anchor="w", fill="x")
 
@@ -1316,14 +1319,39 @@ class TurnpointPurgerUI(tk.Tk):
         )
         self.rate_capture_button.pack(side="left", padx=(0, 10))
 
-        self.rate_export_button = ttk.Button(
+        self.rate_import_button = ttk.Button(
             actions,
             text="ImportCSV",
             style="Cyber.TButton",
             command=self._handle_rate_import_csv,
         )
-        self.rate_export_button.pack(side="left")
+        self.rate_import_button.pack(side="left", padx=(0, 10))
 
+        self.rate_export_csv_button = ttk.Button(
+            actions,
+            text="Export \u2192 CSV",
+            style="Cyber.TButton",
+            command=self._handle_export_truth_csv,
+        )
+        self.rate_export_csv_button.pack(side="left", padx=(0, 10))
+
+        self.rate_export_xlsx_button = ttk.Button(
+            actions,
+            text="Export \u2192 XLSX",
+            style="Cyber.TButton",
+            command=self._handle_export_truth_xlsx,
+        )
+        self.rate_export_xlsx_button.pack(side="left", padx=(0, 10))
+
+        self.rate_cleanup_button = ttk.Button(
+            actions,
+            text="Clean Rate Clutter",
+            style="Cyber.TButton",
+            command=self._handle_clean_rate_clutter,
+        )
+        self.rate_cleanup_button.pack(side="left")
+
+        # ---- DISCOVERY SECTION (preserved) ----
         discovery_section = tk.Frame(
             header,
             bg="#0a1324",
@@ -1437,6 +1465,7 @@ class TurnpointPurgerUI(tk.Tk):
             row=3, column=3, sticky="w", padx=(0, 10), pady=(0, 10)
         )
 
+        # ---- STATUS LOG ----
         tk.Label(
             header,
             textvariable=self.rate_status_var,
@@ -1469,86 +1498,57 @@ class TurnpointPurgerUI(tk.Tk):
         status_view.configure(state="disabled")
         self.rate_log_view = status_view
 
+        # ---- STATUS STRIP ----
+        strip_frame = tk.Frame(
+            parent,
+            bg="#0a1324",
+            highlightthickness=1,
+            highlightbackground="#1f3e66",
+            highlightcolor="#1f3e66",
+        )
+        strip_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=24, pady=(10, 0))
+
+        self.rate_status_strip = tk.Label(
+            strip_frame,
+            text="RED: 0 | YELLOW: 0 | BLUE: 0 | Conflicts: 0 | Last: --:--:--",
+            fg="#d8f1ff",
+            bg="#0a1324",
+            font=("Space Mono", 10, "bold"),
+            anchor="w",
+        )
+        self.rate_status_strip.pack(fill="x", padx=10, pady=6)
+
+        # ---- FILTERS ----
         filters = tk.Frame(parent, bg="#050b16")
-        filters.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 10))
+        filters.grid(row=2, column=0, columnspan=2, sticky="ew", padx=24, pady=(10, 6))
 
         tk.Label(
             filters,
-            text="Sort / Filter",
-            fg="#9fe3ff",
-            bg="#050b16",
-            font=("Space Mono", 11, "bold"),
-        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
-
-        sort_combo = ttk.Combobox(
-            filters,
-            textvariable=self.rate_sort_var,
-            values=METADATA_SORT_OPTIONS,
-            state="readonly",
-            width=28,
-        )
-        sort_combo.grid(row=0, column=1, sticky="w", padx=(0, 12))
-        self.rate_sort_combo = sort_combo
-
-        deleted_checkbox = tk.Checkbutton(
-            filters,
-            text="Deleted = No",
-            variable=self.rate_deleted_no_var,
-            bg="#050b16",
-            fg="#d8e5ff",
-            selectcolor="#0b1322",
-            activebackground="#050b16",
-            activeforeground="#d8e5ff",
-        )
-        deleted_checkbox.grid(row=0, column=2, sticky="w", padx=(0, 10))
-        self.rate_deleted_checkbox = deleted_checkbox
-
-        positive_checkbox = tk.Checkbutton(
-            filters,
-            text="Def. Rate > 0",
-            variable=self.rate_positive_var,
-            bg="#050b16",
-            fg="#d8e5ff",
-            selectcolor="#0b1322",
-            activebackground="#050b16",
-            activeforeground="#d8e5ff",
-        )
-        positive_checkbox.grid(row=0, column=3, sticky="w", padx=(0, 10))
-        self.rate_positive_checkbox = positive_checkbox
-
-        service_code_checkbox = tk.Checkbutton(
-            filters,
-            text="Service Code not empty",
-            variable=self.rate_service_code_var,
-            bg="#050b16",
-            fg="#d8e5ff",
-            selectcolor="#0b1322",
-            activebackground="#050b16",
-            activeforeground="#d8e5ff",
-        )
-        service_code_checkbox.grid(row=0, column=4, sticky="w", padx=(0, 10))
-        self.rate_service_code_checkbox = service_code_checkbox
-
-        sil_checkbox = tk.Checkbutton(
-            filters,
-            text="Service Type contains SIL",
-            variable=self.rate_sil_var,
-            bg="#050b16",
-            fg="#d8e5ff",
-            selectcolor="#0b1322",
-            activebackground="#050b16",
-            activeforeground="#d8e5ff",
-        )
-        sil_checkbox.grid(row=0, column=5, sticky="w", padx=(0, 12))
-        self.rate_sil_checkbox = sil_checkbox
-
-        tk.Label(
-            filters,
-            text="Search",
+            text="Service Group:",
             fg="#9fe3ff",
             bg="#050b16",
             font=("Space Mono", 10),
-        ).grid(row=0, column=6, sticky="w", padx=(0, 6))
+        ).grid(row=0, column=0, sticky="w", padx=(0, 6))
+
+        self.rate_group_combo = ttk.Combobox(
+            filters,
+            textvariable=self.rate_group_var,
+            values=["All Groups"],
+            state="readonly",
+            width=35,
+        )
+        self.rate_group_combo.grid(row=0, column=1, sticky="w", padx=(0, 12))
+        self.rate_group_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: self._refresh_truth_grid()
+        )
+
+        tk.Label(
+            filters,
+            text="Search:",
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=("Space Mono", 10),
+        ).grid(row=0, column=2, sticky="w", padx=(0, 6))
 
         search_entry = tk.Entry(
             filters,
@@ -1560,39 +1560,101 @@ class TurnpointPurgerUI(tk.Tk):
             insertbackground="#18e0ff",
             relief="flat",
         )
-        search_entry.grid(row=0, column=7, sticky="w", padx=(0, 10))
-        search_entry.bind("<Return>", lambda _event: self._apply_rate_filters())
+        search_entry.grid(row=0, column=3, sticky="w", padx=(0, 10))
+        search_entry.bind("<Return>", lambda _e: self._refresh_truth_grid())
         self.rate_search_entry = search_entry
 
         self.rate_apply_button = ttk.Button(
             filters,
             text="Apply",
             style="Cyber.TButton",
-            command=self._apply_rate_filters,
+            command=self._refresh_truth_grid,
         )
-        self.rate_apply_button.grid(row=0, column=8, sticky="w")
-        sort_combo.bind("<<ComboboxSelected>>", lambda _event: self._apply_rate_filters())
+        self.rate_apply_button.grid(row=0, column=4, sticky="w")
 
-        table_frame = tk.Frame(parent, bg="#050b16")
-        table_frame.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 16))
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
+        # ---- TRUTH GRID (left) + INSPECTOR (right) ----
+        grid_frame = tk.Frame(parent, bg="#050b16")
+        grid_frame.grid(row=3, column=0, sticky="nsew", padx=(24, 8), pady=(0, 16))
+        grid_frame.columnconfigure(0, weight=1)
+        grid_frame.rowconfigure(0, weight=1)
 
-        metadata_columns = [column["id"] for column in rate_table_columns_for_mode(RATE_MODE_METADATA)]
-        table = ttk.Treeview(
-            table_frame,
-            columns=metadata_columns,
-            show="headings",
-            height=20,
-            style="Atlas.Treeview",
+        self.truth_grid = Sheet(
+            grid_frame,
+            headers=[
+                "Status",
+                "Service Variant",
+                "ID",
+                "Rate",
+                "Item Number",
+                "Rate Source",
+                "Item Source",
+                "Updated (UTC)",
+            ],
+            show_x_scrollbar=True,
+            show_y_scrollbar=True,
         )
+        self.truth_grid.enable_bindings(
+            "single_select",
+            "row_select",
+            "column_width_resize",
+            "arrowkeys",
+            "right_click_popup_menu",
+            "rc_select",
+            "copy",
+        )
+        self.truth_grid.set_options(
+            font=("JetBrains Mono", 10),
+            header_font=("Space Mono", 10, "bold"),
+            table_bg="#0a1324",
+            table_fg="#e9f2ff",
+            header_bg="#1f3e66",
+            header_fg="#d8f1ff",
+            top_left_bg="#0a1324",
+            top_left_fg="#d8f1ff",
+            frame_bg="#050b16",
+        )
+        self.truth_grid.grid(row=0, column=0, sticky="nsew")
+        self.truth_grid.extra_bindings("cell_select", self._on_truth_row_selected)
 
-        scroll = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
-        table.configure(yscrollcommand=scroll.set)
-        table.grid(row=0, column=0, sticky="nsew")
-        scroll.grid(row=0, column=1, sticky="ns")
-        self.rate_table = table
-        self._configure_rate_table_for_metadata()
+        # ---- INSPECTOR PANEL (right column) ----
+        inspector_frame = tk.Frame(
+            parent,
+            bg="#0a1324",
+            highlightthickness=1,
+            highlightbackground="#1f3e66",
+            highlightcolor="#1f3e66",
+        )
+        inspector_frame.grid(row=3, column=1, sticky="nsew", padx=(8, 24), pady=(0, 16))
+        self.rate_inspector_frame = inspector_frame
+
+        tk.Label(
+            inspector_frame,
+            text="Inspector",
+            fg="#d8f1ff",
+            bg="#0a1324",
+            font=("Space Mono", 11, "bold"),
+        ).pack(anchor="w", padx=10, pady=(8, 4))
+
+        inspector_text = scrolledtext.ScrolledText(
+            inspector_frame,
+            wrap="word",
+            font=("JetBrains Mono", 9),
+            bg="#030611",
+            fg="#c2f1ff",
+            relief="flat",
+            height=35,
+            width=38,
+        )
+        inspector_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        inspector_text.configure(state="disabled")
+        self.rate_inspector_text = inspector_text
+
+        # Inspector text tags
+        inspector_text.tag_config("heading", font=("Space Mono", 11, "bold"), foreground="#18e0ff")
+        inspector_text.tag_config("subheading", font=("Space Mono", 10), foreground="#9fe3ff")
+        inspector_text.tag_config("label", font=("Space Mono", 10, "bold"), foreground="#d8f1ff")
+        inspector_text.tag_config("conflict", font=("Space Mono", 10, "bold"), foreground="#ff6b6b")
+        inspector_text.tag_config("link", font=("JetBrains Mono", 9), foreground="#7cc3ff")
 
     def _build_log_panel(self, parent):
         log_panel = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
