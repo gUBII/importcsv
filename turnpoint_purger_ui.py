@@ -44,13 +44,10 @@ from worker_purger import (
 )
 from worker_state import get_worker_statistics
 from service_type_rate_extractor import (
-    DATASET_COLUMNS,
     capture_service_type_rates,
-    default_rate_numeric,
     normalize_external_row,
 )
 from appointment_item_discovery import (
-    DISCOVERY_COLUMNS,
     discover_appointment_item_numbers,
     load_discovery_latest,
     run_service_type_merge,
@@ -58,88 +55,6 @@ from appointment_item_discovery import (
 import line_item_paths
 from truth_store import TruthStore
 from tksheet import Sheet
-
-
-RATE_MODE_METADATA = "metadata"
-RATE_MODE_DISCOVERY = "discovery"
-METADATA_SORT_OPTIONS = [
-    "Service Type (A→Z)",
-    "Service Type (Z→A)",
-    "ID (Low→High)",
-    "ID (High→Low)",
-    "Def. Rate (Low→High)",
-    "Def. Rate (High→Low)",
-    "Service Code (A→Z)",
-    "Package (A→Z)",
-    "Billing Type (A→Z)",
-]
-DISCOVERY_TABLE_FIELDS = [
-    "Parent Service Type",
-    "Service Variant Label",
-    "Service Type ID",
-    "Item Number",
-    "Service Code",
-    "Rate",
-    "Rate Source",
-    "Source Client ID",
-    "Captured At (UTC)",
-]
-DISCOVERY_TABLE_HEADING_MAP = {
-    "Parent Service Type": "Parent Service Type",
-    "Service Variant Label": "Service Variant Label",
-    "Service Type ID": "Service Type ID",
-    "Item Number": "Item Number",
-    "Service Code": "Service Code",
-    "Rate": "Rate",
-    "Rate Source": "Rate Source",
-    "Source Client ID": "Source Client ID",
-    "Captured At (UTC)": "Captured At (UTC)",
-}
-DISCOVERY_TABLE_WIDTHS = {
-    "Parent Service Type": 260,
-    "Service Variant Label": 340,
-    "Service Type ID": 130,
-    "Item Number": 170,
-    "Service Code": 170,
-    "Rate": 120,
-    "Rate Source": 180,
-    "Source Client ID": 130,
-    "Captured At (UTC)": 220,
-}
-
-
-def rate_table_columns_for_mode(mode: str) -> list[dict[str, object]]:
-    if mode == RATE_MODE_DISCOVERY:
-        return [
-            {
-                "id": field,
-                "heading": DISCOVERY_TABLE_HEADING_MAP.get(field, field),
-                "anchor": "w",
-                "width": DISCOVERY_TABLE_WIDTHS.get(field, 160),
-            }
-            for field in DISCOVERY_TABLE_FIELDS
-        ]
-    return [
-        {"id": "service_type", "heading": "Service Type", "anchor": "w", "width": 330},
-        {"id": "service_type_id", "heading": "ID", "anchor": "center", "width": 130},
-        {"id": "default_rate", "heading": "Def. Rate", "anchor": "center", "width": 130},
-        {"id": "service_code", "heading": "Service Code", "anchor": "w", "width": 180},
-        {"id": "service_type_link", "heading": "ServiceTypeLink", "anchor": "w", "width": 420},
-    ]
-
-
-def normalize_discovery_row_for_table(row: dict[str, object]) -> dict[str, str]:
-    source_fields = DISCOVERY_COLUMNS or DISCOVERY_TABLE_FIELDS
-    source_row = {field: str(row.get(field, "") or "") for field in source_fields}
-    return {field: source_row.get(field, "") for field in DISCOVERY_TABLE_FIELDS}
-
-
-def discovery_row_matches_search(row: dict[str, str], search: str) -> bool:
-    token = str(search or "").strip().lower()
-    if not token:
-        return True
-    text = " ".join(str(row.get(field, "") or "") for field in DISCOVERY_TABLE_FIELDS).lower()
-    return token in text
 
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -267,22 +182,6 @@ class TurnpointPurgerUI(tk.Tk):
         self.discovery_last_result = {}
         self.discovery_last_diagnostics_folder = ""
         self.discovery_last_output_root = ""
-
-        # Legacy rate table state (for backwards compatibility)
-        self.rate_table = None
-        self.rate_table_mode = RATE_MODE_METADATA
-        self.rate_all_rows = []
-        self.rate_visible_rows = []
-        self.rate_sort_var = tk.StringVar(value=METADATA_SORT_OPTIONS[0])
-        self.rate_deleted_no_var = tk.BooleanVar(value=False)
-        self.rate_positive_var = tk.BooleanVar(value=False)
-        self.rate_service_code_var = tk.BooleanVar(value=False)
-        self.rate_sil_var = tk.BooleanVar(value=False)
-        self.rate_sort_combo = None
-        self.rate_deleted_checkbox = None
-        self.rate_positive_checkbox = None
-        self.rate_service_code_checkbox = None
-        self.rate_sil_checkbox = None
 
         configure_credentials(self.credential_username, self.credential_password)
 
@@ -3089,18 +2988,16 @@ class TurnpointPurgerUI(tk.Tk):
     def _set_rate_running(self, running):
         self.rate_running = running
         blocked = running or self.discovery_running
-        if self.rate_capture_button:
-            self.rate_capture_button.configure(
-                state="disabled" if blocked else "normal"
-            )
-        if self.rate_export_button:
-            self.rate_export_button.configure(
-                state="disabled" if blocked else "normal"
-            )
-        if self.rate_apply_button:
-            self.rate_apply_button.configure(
-                state="disabled" if blocked else "normal"
-            )
+        for btn in (
+            self.rate_capture_button,
+            self.rate_import_button,
+            self.rate_export_csv_button,
+            self.rate_export_xlsx_button,
+            self.rate_cleanup_button,
+            self.rate_apply_button,
+        ):
+            if btn:
+                btn.configure(state="disabled" if blocked else "normal")
 
     def _set_discovery_running(self, running):
         self.discovery_running = running
@@ -3140,160 +3037,6 @@ class TurnpointPurgerUI(tk.Tk):
         self.rate_log_view.insert("end", text + "\n")
         self.rate_log_view.see("end")
         self.rate_log_view.configure(state="disabled")
-
-    def _clear_rate_table(self):
-        if not self.rate_table:
-            return
-        self.rate_table.delete(*self.rate_table.get_children())
-
-    def _configure_rate_table_for_mode(self, mode):
-        if not self.rate_table:
-            self.rate_table_mode = mode
-            return
-        columns = rate_table_columns_for_mode(mode)
-        column_ids = [column["id"] for column in columns]
-        self.rate_table.configure(columns=column_ids, displaycolumns=column_ids)
-        for column in columns:
-            column_id = str(column["id"])
-            heading = str(column["heading"])
-            anchor = str(column["anchor"])
-            width = int(column["width"])
-            self.rate_table.heading(column_id, text=heading, anchor=anchor)
-            self.rate_table.column(column_id, width=width, anchor=anchor)
-        self.rate_table_mode = mode
-        self._set_rate_filter_controls_for_mode()
-
-    def _configure_rate_table_for_metadata(self):
-        self._configure_rate_table_for_mode(RATE_MODE_METADATA)
-
-    def _configure_rate_table_for_discovery(self):
-        self._configure_rate_table_for_mode(RATE_MODE_DISCOVERY)
-
-    def _set_rate_filter_controls_for_mode(self):
-        discovery_mode = self.rate_table_mode == RATE_MODE_DISCOVERY
-        control_state = "disabled" if discovery_mode else "normal"
-        if self.rate_sort_combo:
-            self.rate_sort_combo.configure(state=control_state if control_state == "disabled" else "readonly")
-        for checkbox in (
-            self.rate_deleted_checkbox,
-            self.rate_positive_checkbox,
-            self.rate_service_code_checkbox,
-            self.rate_sil_checkbox,
-        ):
-            if checkbox:
-                checkbox.configure(state=control_state)
-
-    def _insert_rate_preview_row(self, row):
-        if not self.rate_table:
-            return
-        if self.rate_table_mode == RATE_MODE_DISCOVERY:
-            values = tuple(row.get(field, "") for field in DISCOVERY_TABLE_FIELDS)
-        else:
-            values = (
-                row.get("Service Type", ""),
-                row.get("ID", ""),
-                row.get("Def. Rate", ""),
-                row.get("Service Code", ""),
-                row.get("ServiceTypeLink", ""),
-            )
-        self.rate_table.insert("", "end", values=values)
-
-    def _rate_row_matches_filters(self, row):
-        if self.rate_table_mode == RATE_MODE_DISCOVERY:
-            return discovery_row_matches_search(row, self.rate_search_var.get())
-
-        deleted = (row.get("Deleted") or "").strip().lower()
-        if self.rate_deleted_no_var.get() and deleted in {"yes", "y", "true", "1", "deleted"}:
-            return False
-
-        if self.rate_positive_var.get() and default_rate_numeric(row.get("Def. Rate", "")) <= 0:
-            return False
-
-        if self.rate_service_code_var.get() and not (row.get("Service Code") or "").strip():
-            return False
-
-        if self.rate_sil_var.get() and "sil" not in (row.get("Service Type") or "").lower():
-            return False
-
-        search = self.rate_search_var.get().strip().lower()
-        if search:
-            text = (
-                f"{row.get('Service Type', '')} "
-                f"{row.get('Service Code', '')} "
-                f"{row.get('Package', '')}"
-            ).lower()
-            if search not in text:
-                return False
-        return True
-
-    def _sorted_rate_rows(self, rows):
-        if self.rate_table_mode == RATE_MODE_DISCOVERY:
-            return sorted(
-                rows,
-                key=lambda r: (
-                    (r.get("Parent Service Type", "") or "").lower(),
-                    (r.get("Service Variant Label", "") or "").lower(),
-                    (r.get("Service Type ID", "") or ""),
-                ),
-            )
-
-        def _id_value(row):
-            raw = (row.get("ID") or "").strip()
-            try:
-                return int(raw)
-            except Exception:
-                return 0
-
-        option = self.rate_sort_var.get().strip()
-        if option == METADATA_SORT_OPTIONS[1]:
-            return sorted(rows, key=lambda r: (r.get("Service Type", "").lower()), reverse=True)
-        if option == METADATA_SORT_OPTIONS[2]:
-            return sorted(rows, key=_id_value)
-        if option == METADATA_SORT_OPTIONS[3]:
-            return sorted(rows, key=_id_value, reverse=True)
-        if option == METADATA_SORT_OPTIONS[4]:
-            return sorted(rows, key=lambda r: default_rate_numeric(r.get("Def. Rate", "")))
-        if option == METADATA_SORT_OPTIONS[5]:
-            return sorted(rows, key=lambda r: default_rate_numeric(r.get("Def. Rate", "")), reverse=True)
-        if option == METADATA_SORT_OPTIONS[6]:
-            return sorted(rows, key=lambda r: (r.get("Service Code", "").lower()))
-        if option == METADATA_SORT_OPTIONS[7]:
-            return sorted(rows, key=lambda r: (r.get("Package", "").lower()))
-        if option == METADATA_SORT_OPTIONS[8]:
-            return sorted(rows, key=lambda r: (r.get("Billing Type", "").lower()))
-        return sorted(rows, key=lambda r: (r.get("Service Type", "").lower()))
-
-    def _apply_rate_filters(self):
-        rows = [row for row in self.rate_all_rows if self._rate_row_matches_filters(row)]
-        rows = self._sorted_rate_rows(rows)
-        self.rate_visible_rows = rows
-        self._clear_rate_table()
-        for row in rows:
-            self._insert_rate_preview_row(row)
-        if self.rate_table_mode == RATE_MODE_DISCOVERY:
-            self.rate_status_var.set(
-                f"Appointment discovery dataset: {len(rows)} shown / {len(self.rate_all_rows)} total."
-            )
-        else:
-            self.rate_status_var.set(
-                f"ServiceType dataset: {len(rows)} shown / {len(self.rate_all_rows)} total."
-            )
-
-    def _load_rate_dataset(self, rows, *, mode=RATE_MODE_METADATA):
-        if mode == RATE_MODE_DISCOVERY:
-            self._configure_rate_table_for_discovery()
-        else:
-            self._configure_rate_table_for_metadata()
-        self.rate_all_rows = []
-        if mode == RATE_MODE_DISCOVERY:
-            for row in rows:
-                normalized = normalize_discovery_row_for_table(row)
-                self.rate_all_rows.append(normalized)
-        else:
-            for row in rows:
-                normalized = {column: str(row.get(column, "")) for column in DATASET_COLUMNS}
-                self.rate_all_rows.append(normalized)
-        self._apply_rate_filters()
 
     def _open_path_in_system(self, path):
         target = Path(path).expanduser()
@@ -3358,9 +3101,7 @@ class TurnpointPurgerUI(tk.Tk):
             return
 
         self._set_discovery_running(True)
-        self._clear_rate_table()
-        self.rate_all_rows = []
-        self.rate_visible_rows = []
+        self.truth_store.clear()
         started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.rate_status_var.set(
             f"Appointment discovery in progress (started {started_at})..."
@@ -3503,10 +3244,10 @@ class TurnpointPurgerUI(tk.Tk):
                 if enriched_path:
                     self.discovery_last_output_root = str(Path(enriched_path).expanduser().parent)
 
-                # Load enriched rows into truth store
+                # Load enriched rows into truth store (main thread)
                 enriched_rows = merged.get("enriched_rows", []) or []
                 for row in enriched_rows:
-                    self._truth_store_ingest("discovery", row)
+                    self.after(0, lambda r=dict(row): self._truth_store_ingest("discovery", r))
 
                 summary = (
                     f"Merge complete: enriched={merged.get('enriched_count', 0)} "
@@ -4115,80 +3856,6 @@ class TurnpointPurgerUI(tk.Tk):
         self._enqueue_log(self._timestamp(f"[ServiceType→Rate] {summary}"))
         self._append_rate_status(self._timestamp(summary))
         messagebox.showinfo("ServiceType → Rate Extractor", summary)
-
-    def _export_service_types_csv(self):
-        rows = list(self.rate_visible_rows or self.rate_all_rows)
-        if not rows:
-            messagebox.showinfo(
-                "ServiceType → Rate Extractor",
-                "No rows to export.",
-            )
-            return
-        target = filedialog.asksaveasfilename(
-            title="Save CSV",
-            parent=self,
-            defaultextension=".csv",
-            initialfile="ServiceTypes_imported.csv",
-            filetypes=[("CSV files", "*.csv")],
-        )
-        if not target:
-            return
-        output_path = Path(target)
-        with output_path.open("w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=DATASET_COLUMNS)
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({column: row.get(column, "") for column in DATASET_COLUMNS})
-        self._enqueue_log(
-            self._timestamp(f"[ServiceType→Rate] CSV exported -> {output_path}")
-        )
-        messagebox.showinfo(
-            "ServiceType → Rate Extractor",
-            f"Exported CSV to:\n{output_path}",
-        )
-
-    def _export_service_types_xlsx(self):
-        rows = list(self.rate_visible_rows or self.rate_all_rows)
-        if not rows:
-            messagebox.showinfo(
-                "ServiceType → Rate Extractor",
-                "No rows to export.",
-            )
-            return
-        target = filedialog.asksaveasfilename(
-            title="Save Excel",
-            parent=self,
-            defaultextension=".xlsx",
-            initialfile="ServiceTypes_imported.xlsx",
-            filetypes=[("Excel files", "*.xlsx")],
-        )
-        if not target:
-            return
-        output_path = Path(target)
-        try:
-            from openpyxl import Workbook
-        except Exception as exc:
-            messagebox.showerror(
-                "ServiceType → Rate Extractor",
-                f"Excel export requires openpyxl:\n{exc}",
-            )
-            return
-
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "ServiceTypes"
-        sheet.append(DATASET_COLUMNS)
-        for row in rows:
-            sheet.append([row.get(column, "") for column in DATASET_COLUMNS])
-        workbook.save(output_path)
-
-        self._enqueue_log(
-            self._timestamp(f"[ServiceType→Rate] Excel exported -> {output_path}")
-        )
-        messagebox.showinfo(
-            "ServiceType → Rate Extractor",
-            f"Exported Excel to:\n{output_path}",
-        )
 
     def _notify_completion(self, success, output=None, error=None):
         def finalize():
