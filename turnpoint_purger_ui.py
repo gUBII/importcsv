@@ -1,6 +1,8 @@
 import csv
 import os
 import queue
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
@@ -47,6 +49,94 @@ from service_type_rate_extractor import (
     default_rate_numeric,
     normalize_external_row,
 )
+from appointment_item_discovery import (
+    DISCOVERY_COLUMNS,
+    discover_appointment_item_numbers,
+    load_discovery_latest,
+    run_service_type_merge,
+)
+
+
+RATE_MODE_METADATA = "metadata"
+RATE_MODE_DISCOVERY = "discovery"
+METADATA_SORT_OPTIONS = [
+    "Service Type (A→Z)",
+    "Service Type (Z→A)",
+    "ID (Low→High)",
+    "ID (High→Low)",
+    "Def. Rate (Low→High)",
+    "Def. Rate (High→Low)",
+    "Service Code (A→Z)",
+    "Package (A→Z)",
+    "Billing Type (A→Z)",
+]
+DISCOVERY_TABLE_FIELDS = [
+    "Parent Service Type",
+    "Service Variant Label",
+    "Service Type ID",
+    "Item Number",
+    "Service Code",
+    "Rate",
+    "Rate Source",
+    "Source Client ID",
+    "Captured At (UTC)",
+]
+DISCOVERY_TABLE_HEADING_MAP = {
+    "Parent Service Type": "Parent Service Type",
+    "Service Variant Label": "Service Variant Label",
+    "Service Type ID": "Service Type ID",
+    "Item Number": "Item Number",
+    "Service Code": "Service Code",
+    "Rate": "Rate",
+    "Rate Source": "Rate Source",
+    "Source Client ID": "Source Client ID",
+    "Captured At (UTC)": "Captured At (UTC)",
+}
+DISCOVERY_TABLE_WIDTHS = {
+    "Parent Service Type": 260,
+    "Service Variant Label": 340,
+    "Service Type ID": 130,
+    "Item Number": 170,
+    "Service Code": 170,
+    "Rate": 120,
+    "Rate Source": 180,
+    "Source Client ID": 130,
+    "Captured At (UTC)": 220,
+}
+
+
+def rate_table_columns_for_mode(mode: str) -> list[dict[str, object]]:
+    if mode == RATE_MODE_DISCOVERY:
+        return [
+            {
+                "id": field,
+                "heading": DISCOVERY_TABLE_HEADING_MAP.get(field, field),
+                "anchor": "w",
+                "width": DISCOVERY_TABLE_WIDTHS.get(field, 160),
+            }
+            for field in DISCOVERY_TABLE_FIELDS
+        ]
+    return [
+        {"id": "service_type", "heading": "Service Type", "anchor": "w", "width": 330},
+        {"id": "service_type_id", "heading": "ID", "anchor": "center", "width": 130},
+        {"id": "default_rate", "heading": "Def. Rate", "anchor": "center", "width": 130},
+        {"id": "service_code", "heading": "Service Code", "anchor": "w", "width": 180},
+        {"id": "service_type_link", "heading": "ServiceTypeLink", "anchor": "w", "width": 420},
+    ]
+
+
+def normalize_discovery_row_for_table(row: dict[str, object]) -> dict[str, str]:
+    source_fields = DISCOVERY_COLUMNS or DISCOVERY_TABLE_FIELDS
+    source_row = {field: str(row.get(field, "") or "") for field in source_fields}
+    return {field: source_row.get(field, "") for field in DISCOVERY_TABLE_FIELDS}
+
+
+def discovery_row_matches_search(row: dict[str, str], search: str) -> bool:
+    token = str(search or "").strip().lower()
+    if not token:
+        return True
+    text = " ".join(str(row.get(field, "") or "") for field in DISCOVERY_TABLE_FIELDS).lower()
+    return token in text
 
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -145,6 +235,12 @@ class TurnpointPurgerUI(tk.Tk):
         self.rate_capture_button = None
         self.rate_export_button = None
         self.rate_apply_button = None
+        self.rate_sort_combo = None
+        self.rate_deleted_checkbox = None
+        self.rate_positive_checkbox = None
+        self.rate_service_code_checkbox = None
+        self.rate_sil_checkbox = None
+        self.rate_search_entry = None
         self.rate_log_view = None
         self.rate_all_rows = []
         self.rate_visible_rows = []
@@ -154,6 +250,21 @@ class TurnpointPurgerUI(tk.Tk):
         self.rate_service_code_var = tk.BooleanVar(value=False)
         self.rate_sil_var = tk.BooleanVar(value=False)
         self.rate_search_var = tk.StringVar(value="")
+        self.rate_table_mode = RATE_MODE_METADATA
+        self.discovery_probe_client_var = tk.StringVar(value="")
+        self.discovery_headless_var = tk.BooleanVar(value=True)
+        self.discovery_debug_var = tk.BooleanVar(value=False)
+        self.discovery_running = False
+        self.discovery_run_button = None
+        self.discovery_merge_button = None
+        self.discovery_open_diagnostics_button = None
+        self.discovery_open_output_button = None
+        self.discovery_probe_entry = None
+        self.discovery_headless_checkbox = None
+        self.discovery_debug_checkbox = None
+        self.discovery_last_result = {}
+        self.discovery_last_diagnostics_folder = ""
+        self.discovery_last_output_root = ""
 
         configure_credentials(self.credential_username, self.credential_password)
 
@@ -1195,6 +1306,119 @@ class TurnpointPurgerUI(tk.Tk):
         )
         self.rate_export_button.pack(side="left")
 
+        discovery_section = tk.Frame(
+            header,
+            bg="#0a1324",
+            highlightthickness=1,
+            highlightbackground="#1f3e66",
+            highlightcolor="#1f3e66",
+        )
+        discovery_section.pack(anchor="w", fill="x", pady=(12, 6))
+        discovery_section.columnconfigure(1, weight=1)
+
+        tk.Label(
+            discovery_section,
+            text="Appointment Discovery + Enrichment",
+            fg="#d8f1ff",
+            bg="#0a1324",
+            font=("Space Mono", 11, "bold"),
+        ).grid(row=0, column=0, columnspan=6, sticky="w", padx=10, pady=(8, 2))
+
+        tk.Label(
+            discovery_section,
+            text=(
+                "Probe Client ID is required for Assist discovery context. "
+                "Run discovery first, then merge explicitly."
+            ),
+            fg="#83c5f3",
+            bg="#0a1324",
+            font=("Space Mono", 9),
+            justify="left",
+        ).grid(row=1, column=0, columnspan=6, sticky="w", padx=10, pady=(0, 8))
+
+        tk.Label(
+            discovery_section,
+            text="Probe Client ID",
+            fg="#9fe3ff",
+            bg="#0a1324",
+            font=("Space Mono", 10),
+        ).grid(row=2, column=0, sticky="w", padx=(10, 6), pady=(0, 8))
+
+        probe_entry = tk.Entry(
+            discovery_section,
+            textvariable=self.discovery_probe_client_var,
+            width=20,
+            font=("JetBrains Mono", 11),
+            bg="#0f1a31",
+            fg="#e9f2ff",
+            insertbackground="#18e0ff",
+            relief="flat",
+        )
+        probe_entry.grid(row=2, column=1, sticky="w", padx=(0, 10), pady=(0, 8))
+        self.discovery_probe_entry = probe_entry
+
+        headless_checkbox = tk.Checkbutton(
+            discovery_section,
+            text="Headless",
+            variable=self.discovery_headless_var,
+            bg="#0a1324",
+            fg="#d8e5ff",
+            selectcolor="#0f1a31",
+            activebackground="#0a1324",
+            activeforeground="#d8e5ff",
+        )
+        headless_checkbox.grid(row=2, column=2, sticky="w", padx=(0, 10), pady=(0, 8))
+        self.discovery_headless_checkbox = headless_checkbox
+
+        debug_checkbox = tk.Checkbutton(
+            discovery_section,
+            text="Discovery Debug",
+            variable=self.discovery_debug_var,
+            bg="#0a1324",
+            fg="#d8e5ff",
+            selectcolor="#0f1a31",
+            activebackground="#0a1324",
+            activeforeground="#d8e5ff",
+        )
+        debug_checkbox.grid(row=2, column=3, sticky="w", padx=(0, 10), pady=(0, 8))
+        self.discovery_debug_checkbox = debug_checkbox
+
+        self.discovery_run_button = ttk.Button(
+            discovery_section,
+            text="Run Appointment Discovery",
+            style="Cyber.TButton",
+            command=self._handle_run_appointment_discovery,
+        )
+        self.discovery_run_button.grid(row=3, column=0, sticky="w", padx=(10, 8), pady=(0, 10))
+
+        self.discovery_merge_button = ttk.Button(
+            discovery_section,
+            text="Merge with Service Types",
+            style="Cyber.TButton",
+            command=self._handle_merge_service_types_from_discovery,
+        )
+        self.discovery_merge_button.grid(row=3, column=1, sticky="w", padx=(0, 8), pady=(0, 10))
+
+        self.discovery_open_diagnostics_button = ttk.Button(
+            discovery_section,
+            text="Open Diagnostics Folder",
+            style="Cyber.TButton",
+            command=self._handle_open_diagnostics_folder,
+        )
+        self.discovery_open_diagnostics_button.grid(
+            row=3, column=2, sticky="w", padx=(0, 8), pady=(0, 10)
+        )
+
+        self.discovery_open_output_button = ttk.Button(
+            discovery_section,
+            text="Open Output Folder",
+            style="Cyber.TButton",
+            command=self._handle_open_output_folder,
+        )
+        self.discovery_open_output_button.grid(
+            row=3, column=3, sticky="w", padx=(0, 10), pady=(0, 10)
+        )
+
         tk.Label(
             header,
             textvariable=self.rate_status_var,
@@ -1238,27 +1462,17 @@ class TurnpointPurgerUI(tk.Tk):
             font=("Space Mono", 11, "bold"),
         ).grid(row=0, column=0, sticky="w", padx=(0, 10))
 
-        sort_options = [
-            "Service Type (A→Z)",
-            "Service Type (Z→A)",
-            "ID (Low→High)",
-            "ID (High→Low)",
-            "Def. Rate (Low→High)",
-            "Def. Rate (High→Low)",
-            "Service Code (A→Z)",
-            "Package (A→Z)",
-            "Billing Type (A→Z)",
-        ]
         sort_combo = ttk.Combobox(
             filters,
             textvariable=self.rate_sort_var,
-            values=sort_options,
+            values=METADATA_SORT_OPTIONS,
             state="readonly",
             width=28,
         )
         sort_combo.grid(row=0, column=1, sticky="w", padx=(0, 12))
+        self.rate_sort_combo = sort_combo
 
-        tk.Checkbutton(
+        deleted_checkbox = tk.Checkbutton(
             filters,
             text="Deleted = No",
             variable=self.rate_deleted_no_var,
@@ -1267,9 +1481,11 @@ class TurnpointPurgerUI(tk.Tk):
             selectcolor="#0b1322",
             activebackground="#050b16",
             activeforeground="#d8e5ff",
-        ).grid(row=0, column=2, sticky="w", padx=(0, 10))
+        )
+        deleted_checkbox.grid(row=0, column=2, sticky="w", padx=(0, 10))
+        self.rate_deleted_checkbox = deleted_checkbox
 
-        tk.Checkbutton(
+        positive_checkbox = tk.Checkbutton(
             filters,
             text="Def. Rate > 0",
             variable=self.rate_positive_var,
@@ -1278,9 +1494,11 @@ class TurnpointPurgerUI(tk.Tk):
             selectcolor="#0b1322",
             activebackground="#050b16",
             activeforeground="#d8e5ff",
-        ).grid(row=0, column=3, sticky="w", padx=(0, 10))
+        )
+        positive_checkbox.grid(row=0, column=3, sticky="w", padx=(0, 10))
+        self.rate_positive_checkbox = positive_checkbox
 
-        tk.Checkbutton(
+        service_code_checkbox = tk.Checkbutton(
             filters,
             text="Service Code not empty",
             variable=self.rate_service_code_var,
@@ -1289,9 +1507,11 @@ class TurnpointPurgerUI(tk.Tk):
             selectcolor="#0b1322",
             activebackground="#050b16",
             activeforeground="#d8e5ff",
-        ).grid(row=0, column=4, sticky="w", padx=(0, 10))
+        )
+        service_code_checkbox.grid(row=0, column=4, sticky="w", padx=(0, 10))
+        self.rate_service_code_checkbox = service_code_checkbox
 
-        tk.Checkbutton(
+        sil_checkbox = tk.Checkbutton(
             filters,
             text="Service Type contains SIL",
             variable=self.rate_sil_var,
@@ -1300,7 +1520,9 @@ class TurnpointPurgerUI(tk.Tk):
             selectcolor="#0b1322",
             activebackground="#050b16",
             activeforeground="#d8e5ff",
-        ).grid(row=0, column=5, sticky="w", padx=(0, 12))
+        )
+        sil_checkbox.grid(row=0, column=5, sticky="w", padx=(0, 12))
+        self.rate_sil_checkbox = sil_checkbox
 
         tk.Label(
             filters,
@@ -1322,6 +1544,7 @@ class TurnpointPurgerUI(tk.Tk):
         )
         search_entry.grid(row=0, column=7, sticky="w", padx=(0, 10))
         search_entry.bind("<Return>", lambda _event: self._apply_rate_filters())
+        self.rate_search_entry = search_entry
 
         self.rate_apply_button = ttk.Button(
             filters,
@@ -1337,36 +1560,21 @@ class TurnpointPurgerUI(tk.Tk):
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
-        columns = (
-            "service_type",
-            "service_type_id",
-            "default_rate",
-            "service_code",
-            "service_type_link",
-        )
+        metadata_columns = [column["id"] for column in rate_table_columns_for_mode(RATE_MODE_METADATA)]
         table = ttk.Treeview(
             table_frame,
-            columns=columns,
+            columns=metadata_columns,
             show="headings",
             height=20,
             style="Atlas.Treeview",
         )
-        table.heading("service_type", text="Service Type", anchor="w")
-        table.heading("service_type_id", text="ID", anchor="center")
-        table.heading("default_rate", text="Def. Rate", anchor="center")
-        table.heading("service_code", text="Service Code", anchor="w")
-        table.heading("service_type_link", text="ServiceTypeLink", anchor="w")
-        table.column("service_type", width=330, anchor="w")
-        table.column("service_type_id", width=130, anchor="center")
-        table.column("default_rate", width=130, anchor="center")
-        table.column("service_code", width=180, anchor="w")
-        table.column("service_type_link", width=420, anchor="w")
 
         scroll = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
         table.configure(yscrollcommand=scroll.set)
         table.grid(row=0, column=0, sticky="nsew")
         scroll.grid(row=0, column=1, sticky="ns")
         self.rate_table = table
+        self._configure_rate_table_for_metadata()
 
     def _build_log_panel(self, parent):
         log_panel = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
@@ -2800,18 +3008,50 @@ class TurnpointPurgerUI(tk.Tk):
 
     def _set_rate_running(self, running):
         self.rate_running = running
+        blocked = running or self.discovery_running
         if self.rate_capture_button:
             self.rate_capture_button.configure(
-                state="disabled" if running else "normal"
+                state="disabled" if blocked else "normal"
             )
         if self.rate_export_button:
             self.rate_export_button.configure(
-                state="disabled" if running else "normal"
+                state="disabled" if blocked else "normal"
             )
         if self.rate_apply_button:
             self.rate_apply_button.configure(
-                state="disabled" if running else "normal"
+                state="disabled" if blocked else "normal"
             )
+
+    def _set_discovery_running(self, running):
+        self.discovery_running = running
+        blocked = running or self.rate_running
+        if self.discovery_run_button:
+            self.discovery_run_button.configure(
+                state="disabled" if blocked else "normal"
+            )
+        if self.discovery_merge_button:
+            self.discovery_merge_button.configure(
+                state="disabled" if blocked else "normal"
+            )
+        if self.discovery_open_diagnostics_button:
+            self.discovery_open_diagnostics_button.configure(
+                state="disabled" if blocked else "normal"
+            )
+        if self.discovery_open_output_button:
+            self.discovery_open_output_button.configure(
+                state="disabled" if blocked else "normal"
+            )
+        if self.discovery_probe_entry:
+            self.discovery_probe_entry.configure(
+                state="disabled" if blocked else "normal"
+            )
+        for checkbox in (
+            self.discovery_headless_checkbox,
+            self.discovery_debug_checkbox,
+        ):
+            if checkbox:
+                checkbox.configure(state="disabled" if blocked else "normal")
+        self._set_rate_running(self.rate_running)
 
     def _append_rate_status(self, text):
         if not self.rate_log_view:
@@ -2826,19 +3066,62 @@ class TurnpointPurgerUI(tk.Tk):
             return
         self.rate_table.delete(*self.rate_table.get_children())
 
+    def _configure_rate_table_for_mode(self, mode):
+        if not self.rate_table:
+            self.rate_table_mode = mode
+            return
+        columns = rate_table_columns_for_mode(mode)
+        column_ids = [column["id"] for column in columns]
+        self.rate_table.configure(columns=column_ids, displaycolumns=column_ids)
+        for column in columns:
+            column_id = str(column["id"])
+            heading = str(column["heading"])
+            anchor = str(column["anchor"])
+            width = int(column["width"])
+            self.rate_table.heading(column_id, text=heading, anchor=anchor)
+            self.rate_table.column(column_id, width=width, anchor=anchor)
+        self.rate_table_mode = mode
+        self._set_rate_filter_controls_for_mode()
+
+    def _configure_rate_table_for_metadata(self):
+        self._configure_rate_table_for_mode(RATE_MODE_METADATA)
+
+    def _configure_rate_table_for_discovery(self):
+        self._configure_rate_table_for_mode(RATE_MODE_DISCOVERY)
+
+    def _set_rate_filter_controls_for_mode(self):
+        discovery_mode = self.rate_table_mode == RATE_MODE_DISCOVERY
+        control_state = "disabled" if discovery_mode else "normal"
+        if self.rate_sort_combo:
+            self.rate_sort_combo.configure(state=control_state if control_state == "disabled" else "readonly")
+        for checkbox in (
+            self.rate_deleted_checkbox,
+            self.rate_positive_checkbox,
+            self.rate_service_code_checkbox,
+            self.rate_sil_checkbox,
+        ):
+            if checkbox:
+                checkbox.configure(state=control_state)
+
     def _insert_rate_preview_row(self, row):
         if not self.rate_table:
             return
-        values = (
-            row.get("Service Type", ""),
-            row.get("ID", ""),
-            row.get("Def. Rate", ""),
-            row.get("Service Code", ""),
-            row.get("ServiceTypeLink", ""),
-        )
+        if self.rate_table_mode == RATE_MODE_DISCOVERY:
+            values = tuple(row.get(field, "") for field in DISCOVERY_TABLE_FIELDS)
+        else:
+            values = (
+                row.get("Service Type", ""),
+                row.get("ID", ""),
+                row.get("Def. Rate", ""),
+                row.get("Service Code", ""),
+                row.get("ServiceTypeLink", ""),
+            )
         self.rate_table.insert("", "end", values=values)
 
     def _rate_row_matches_filters(self, row):
+        if self.rate_table_mode == RATE_MODE_DISCOVERY:
+            return discovery_row_matches_search(row, self.rate_search_var.get())
+
         deleted = (row.get("Deleted") or "").strip().lower()
         if self.rate_deleted_no_var.get() and deleted in {"yes", "y", "true", "1", "deleted"}:
             return False
@@ -2864,6 +3147,16 @@ class TurnpointPurgerUI(tk.Tk):
         return True
 
     def _sorted_rate_rows(self, rows):
+        if self.rate_table_mode == RATE_MODE_DISCOVERY:
+            return sorted(
+                rows,
+                key=lambda r: (
+                    (r.get("Parent Service Type", "") or "").lower(),
+                    (r.get("Service Variant Label", "") or "").lower(),
+                    (r.get("Service Type ID", "") or ""),
+                ),
+            )
+
         def _id_value(row):
             raw = (row.get("ID") or "").strip()
             try:
@@ -2872,21 +3165,21 @@ class TurnpointPurgerUI(tk.Tk):
                 return 0
 
         option = self.rate_sort_var.get().strip()
-        if option == "Service Type (Z→A)":
+        if option == METADATA_SORT_OPTIONS[1]:
             return sorted(rows, key=lambda r: (r.get("Service Type", "").lower()), reverse=True)
-        if option == "ID (Low→High)":
+        if option == METADATA_SORT_OPTIONS[2]:
             return sorted(rows, key=_id_value)
-        if option == "ID (High→Low)":
+        if option == METADATA_SORT_OPTIONS[3]:
             return sorted(rows, key=_id_value, reverse=True)
-        if option == "Def. Rate (Low→High)":
+        if option == METADATA_SORT_OPTIONS[4]:
             return sorted(rows, key=lambda r: default_rate_numeric(r.get("Def. Rate", "")))
-        if option == "Def. Rate (High→Low)":
+        if option == METADATA_SORT_OPTIONS[5]:
             return sorted(rows, key=lambda r: default_rate_numeric(r.get("Def. Rate", "")), reverse=True)
-        if option == "Service Code (A→Z)":
+        if option == METADATA_SORT_OPTIONS[6]:
             return sorted(rows, key=lambda r: (r.get("Service Code", "").lower()))
-        if option == "Package (A→Z)":
+        if option == METADATA_SORT_OPTIONS[7]:
             return sorted(rows, key=lambda r: (r.get("Package", "").lower()))
-        if option == "Billing Type (A→Z)":
+        if option == METADATA_SORT_OPTIONS[8]:
             return sorted(rows, key=lambda r: (r.get("Billing Type", "").lower()))
         return sorted(rows, key=lambda r: (r.get("Service Type", "").lower()))
 
@@ -2897,20 +3190,290 @@ class TurnpointPurgerUI(tk.Tk):
         self._clear_rate_table()
         for row in rows:
             self._insert_rate_preview_row(row)
+        if self.rate_table_mode == RATE_MODE_DISCOVERY:
+            self.rate_status_var.set(
+                f"Appointment discovery dataset: {len(rows)} shown / {len(self.rate_all_rows)} total."
+            )
+        else:
+            self.rate_status_var.set(
+                f"ServiceType dataset: {len(rows)} shown / {len(self.rate_all_rows)} total."
+            )
+
+    def _load_rate_dataset(self, rows, *, mode=RATE_MODE_METADATA):
+        if mode == RATE_MODE_DISCOVERY:
+            self._configure_rate_table_for_discovery()
+        else:
+            self._configure_rate_table_for_metadata()
+        self.rate_all_rows = []
+        if mode == RATE_MODE_DISCOVERY:
+            for row in rows:
+                normalized = normalize_discovery_row_for_table(row)
+                self.rate_all_rows.append(normalized)
+        else:
+            for row in rows:
+                normalized = {column: str(row.get(column, "")) for column in DATASET_COLUMNS}
+                self.rate_all_rows.append(normalized)
+        self._apply_rate_filters()
+
+    def _open_path_in_system(self, path):
+        target = Path(path).expanduser()
+        if not target.exists():
+            raise FileNotFoundError(f"Path not found: {target}")
+        if sys.platform.startswith("darwin"):
+            subprocess.Popen(["open", str(target)])
+            return
+        if os.name == "nt":
+            os.startfile(str(target))  # type: ignore[attr-defined]
+            return
+        subprocess.Popen(["xdg-open", str(target)])
+
+    def _handle_open_diagnostics_folder(self):
+        folder = self.discovery_last_diagnostics_folder
+        if not folder:
+            messagebox.showwarning(
+                "ServiceType → Rate Extractor",
+                "No diagnostics folder recorded yet. Run discovery first.",
+            )
+            return
+        try:
+            self._open_path_in_system(folder)
+        except Exception as exc:
+            messagebox.showerror(
+                "ServiceType → Rate Extractor",
+                f"Unable to open diagnostics folder:\n{exc}",
+            )
+
+    def _handle_open_output_folder(self):
+        folder = self.discovery_last_output_root
+        if not folder:
+            messagebox.showwarning(
+                "ServiceType → Rate Extractor",
+                "No output folder recorded yet. Run discovery or merge first.",
+            )
+            return
+        try:
+            self._open_path_in_system(folder)
+        except Exception as exc:
+            messagebox.showerror(
+                "ServiceType → Rate Extractor",
+                f"Unable to open output folder:\n{exc}",
+            )
+
+    def _handle_run_appointment_discovery(self):
+        if self.discovery_running:
+            return
+        if self.rate_running:
+            messagebox.showwarning(
+                "ServiceType → Rate Extractor",
+                "Wait for the metadata capture/import task to complete before running discovery.",
+            )
+            return
+
+        probe_client_id = self.discovery_probe_client_var.get().strip()
+        if not probe_client_id:
+            messagebox.showerror(
+                "ServiceType → Rate Extractor",
+                "Probe Client ID is required for appointment discovery.",
+            )
+            return
+
+        self._set_discovery_running(True)
+        self._clear_rate_table()
+        self.rate_all_rows = []
+        self.rate_visible_rows = []
+        started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.rate_status_var.set(
-            f"ServiceType dataset: {len(rows)} shown / {len(self.rate_all_rows)} total."
+            f"Appointment discovery in progress (started {started_at})..."
+        )
+        self._append_rate_status(
+            self._timestamp(
+                f"[AppointmentDiscovery] Started at {started_at} with probe {probe_client_id}"
+            )
         )
 
-    def _load_rate_dataset(self, rows):
-        self.rate_all_rows = []
-        for row in rows:
-            normalized = {column: str(row.get(column, "")) for column in DATASET_COLUMNS}
-            self.rate_all_rows.append(normalized)
-        self._apply_rate_filters()
+        def on_progress(message):
+            plain = str(message or "").strip()
+            if not plain:
+                return
+            if plain.startswith("["):
+                line = plain
+            else:
+                line = f"[AppointmentDiscovery] {plain}"
+            stamped = self._timestamp(line)
+            self._enqueue_log(stamped)
+            self.after(0, lambda t=stamped: self._append_rate_status(t))
+
+        def on_event(event):
+            level = str(event.get("level", "INFO")).upper()
+            if level not in {"WARN", "ERROR"}:
+                return
+            code = str(event.get("code", "EVENT")).strip() or "EVENT"
+            message = str(event.get("message", "")).strip()
+            line = f"[AppointmentDiscovery][{level}][{code}] {message}"
+            stamped = self._timestamp(line)
+            self._enqueue_log(stamped)
+            self.after(0, lambda t=stamped: self._append_rate_status(t))
+
+        def task():
+            try:
+                result = discover_appointment_item_numbers(
+                    headless=self.discovery_headless_var.get(),
+                    probe_client_id=probe_client_id,
+                    on_progress=on_progress,
+                    on_event=on_event,
+                    discovery_debug=self.discovery_debug_var.get(),
+                )
+                rows = list(result.get("rows", []) or [])
+                self.discovery_last_result = dict(result)
+                self.discovery_last_diagnostics_folder = str(
+                    result.get("diagnostics_folder", "") or ""
+                )
+                output_root_text = str(result.get("output_root", "") or "").strip()
+                if output_root_text:
+                    self.discovery_last_output_root = str(Path(output_root_text).expanduser())
+                else:
+                    output_root = Path(
+                        str(result.get("discovery_latest_csv", "") or "")
+                    ).expanduser().parent
+                    self.discovery_last_output_root = str(output_root)
+                self.after(
+                    0,
+                    lambda r=rows: self._load_rate_dataset(r, mode=RATE_MODE_DISCOVERY),
+                )
+
+                summary = (
+                    f"Appointment discovery complete: {result.get('row_count', 0)} row(s).\n"
+                    f"Diagnostics: {self.discovery_last_diagnostics_folder}\n"
+                    f"CSV: {result.get('discovery_latest_csv', '')}\n"
+                    f"XLSX: {result.get('discovery_latest_xlsx', '')}"
+                )
+                self._enqueue_log(
+                    self._timestamp(f"[AppointmentDiscovery] {summary}")
+                )
+                self.after(0, lambda: self.rate_status_var.set(summary))
+                self.after(
+                    0,
+                    lambda s=summary: self._append_rate_status(self._timestamp(s)),
+                )
+                self.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "ServiceType → Rate Extractor", summary
+                    ),
+                )
+            except Exception as exc:
+                error = f"Appointment discovery failed: {exc}"
+                self._enqueue_log(self._timestamp(f"[AppointmentDiscovery] {error}"))
+                self.after(
+                    0,
+                    lambda: self.rate_status_var.set(
+                        "Appointment discovery failed. Inspect logs for details."
+                    ),
+                )
+                self.after(
+                    0,
+                    lambda err=str(exc): messagebox.showerror(
+                        "ServiceType → Rate Extractor",
+                        f"Appointment discovery failed:\n{err}",
+                    ),
+                )
+            finally:
+                self.after(0, lambda: self._set_discovery_running(False))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _handle_merge_service_types_from_discovery(self):
+        if self.discovery_running:
+            return
+        if self.rate_running:
+            messagebox.showwarning(
+                "ServiceType → Rate Extractor",
+                "Wait for the metadata capture/import task to complete before running merge.",
+            )
+            return
+
+        self._set_discovery_running(True)
+        started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.rate_status_var.set(f"Service type merge in progress (started {started_at})...")
+        self._append_rate_status(
+            self._timestamp(f"[AppointmentDiscovery] Merge started at {started_at}")
+        )
+
+        def on_progress(message):
+            plain = str(message or "").strip()
+            if not plain:
+                return
+            line = plain if plain.startswith("[") else f"[AppointmentDiscovery] {plain}"
+            stamped = self._timestamp(line)
+            self._enqueue_log(stamped)
+            self.after(0, lambda t=stamped: self._append_rate_status(t))
+
+        def task():
+            try:
+                discovered_rows = list(self.discovery_last_result.get("rows", []) or [])
+                if not discovered_rows:
+                    discovered_rows = load_discovery_latest()
+                if not discovered_rows:
+                    raise RuntimeError(
+                        "No discovery rows available. Run appointment discovery first."
+                    )
+
+                merged = run_service_type_merge(discovered_rows, progress=on_progress)
+                enriched_path = str(merged.get("enriched_latest_csv", "") or "")
+                if enriched_path:
+                    self.discovery_last_output_root = str(Path(enriched_path).expanduser().parent)
+
+                summary = (
+                    f"Merge complete: enriched={merged.get('enriched_count', 0)} "
+                    f"| unmatched={merged.get('unmatched_count', 0)}\n"
+                    f"Enriched CSV: {merged.get('enriched_latest_csv', '')}\n"
+                    f"Unmatched CSV: {merged.get('unmatched_latest_csv', '')}"
+                )
+                self._enqueue_log(
+                    self._timestamp(f"[AppointmentDiscovery] {summary}")
+                )
+                self.after(0, lambda: self.rate_status_var.set(summary))
+                self.after(
+                    0,
+                    lambda s=summary: self._append_rate_status(self._timestamp(s)),
+                )
+                self.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "ServiceType → Rate Extractor", summary
+                    ),
+                )
+            except Exception as exc:
+                error = f"Service type merge failed: {exc}"
+                self._enqueue_log(self._timestamp(f"[AppointmentDiscovery] {error}"))
+                self.after(
+                    0,
+                    lambda: self.rate_status_var.set(
+                        "Service type merge failed. Inspect logs for details."
+                    ),
+                )
+                self.after(
+                    0,
+                    lambda err=str(exc): messagebox.showerror(
+                        "ServiceType → Rate Extractor",
+                        f"Service type merge failed:\n{err}",
+                    ),
+                )
+            finally:
+                self.after(0, lambda: self._set_discovery_running(False))
+
+        threading.Thread(target=task, daemon=True).start()
 
     def _handle_capture_live_rates(self):
         if self.rate_running:
             return
+        if self.discovery_running:
+            messagebox.showwarning(
+                "ServiceType → Rate Extractor",
+                "Wait for appointment discovery/merge to finish before running metadata capture.",
+            )
+            return
+        self._configure_rate_table_for_metadata()
         self._clear_rate_table()
         self.rate_all_rows = []
         self.rate_visible_rows = []
@@ -2993,6 +3556,12 @@ class TurnpointPurgerUI(tk.Tk):
                 "Wait for capture to finish before importing.",
             )
             return
+        if self.discovery_running:
+            messagebox.showwarning(
+                "ServiceType → Rate Extractor",
+                "Wait for appointment discovery/merge to finish before importing metadata CSV.",
+            )
+            return
         selected = filedialog.askopenfilename(
             title="ImportCSV - select source CSV",
             parent=self,
@@ -3029,7 +3598,7 @@ class TurnpointPurgerUI(tk.Tk):
                 "Imported CSV has no valid ServiceType rows.",
             )
             return
-        self._load_rate_dataset(imported_rows)
+        self._load_rate_dataset(imported_rows, mode=RATE_MODE_METADATA)
         self._enqueue_log(
             self._timestamp(
                 f"[ServiceType→Rate] ImportCSV loaded {len(imported_rows)} row(s) from {source}"
