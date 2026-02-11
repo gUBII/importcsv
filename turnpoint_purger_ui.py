@@ -268,6 +268,22 @@ class TurnpointPurgerUI(tk.Tk):
         self.discovery_last_diagnostics_folder = ""
         self.discovery_last_output_root = ""
 
+        # Legacy rate table state (for backwards compatibility)
+        self.rate_table = None
+        self.rate_table_mode = RATE_MODE_METADATA
+        self.rate_all_rows = []
+        self.rate_visible_rows = []
+        self.rate_sort_var = tk.StringVar(value=METADATA_SORT_OPTIONS[0])
+        self.rate_deleted_no_var = tk.BooleanVar(value=False)
+        self.rate_positive_var = tk.BooleanVar(value=False)
+        self.rate_service_code_var = tk.BooleanVar(value=False)
+        self.rate_sil_var = tk.BooleanVar(value=False)
+        self.rate_sort_combo = None
+        self.rate_deleted_checkbox = None
+        self.rate_positive_checkbox = None
+        self.rate_service_code_checkbox = None
+        self.rate_sil_checkbox = None
+
         configure_credentials(self.credential_username, self.credential_password)
 
         self._setup_styles()
@@ -3316,6 +3332,9 @@ class TurnpointPurgerUI(tk.Tk):
             self._enqueue_log(stamped)
             self.after(0, lambda t=stamped: self._append_rate_status(t))
 
+        def on_row(row):
+            self.after(0, lambda r=dict(row): self._truth_store_ingest("discovery", r))
+
         def task():
             try:
                 result = discover_appointment_item_numbers(
@@ -3323,6 +3342,7 @@ class TurnpointPurgerUI(tk.Tk):
                     probe_client_id=probe_client_id,
                     on_progress=on_progress,
                     on_event=on_event,
+                    on_row=on_row,
                     discovery_debug=self.discovery_debug_var.get(),
                 )
                 rows = list(result.get("rows", []) or [])
@@ -3338,10 +3358,6 @@ class TurnpointPurgerUI(tk.Tk):
                         str(result.get("discovery_latest_csv", "") or "")
                     ).expanduser().parent
                     self.discovery_last_output_root = str(output_root)
-                self.after(
-                    0,
-                    lambda r=rows: self._load_rate_dataset(r, mode=RATE_MODE_DISCOVERY),
-                )
 
                 summary = (
                     f"Appointment discovery complete: {result.get('row_count', 0)} row(s).\n"
@@ -3424,6 +3440,11 @@ class TurnpointPurgerUI(tk.Tk):
                 enriched_path = str(merged.get("enriched_latest_csv", "") or "")
                 if enriched_path:
                     self.discovery_last_output_root = str(Path(enriched_path).expanduser().parent)
+
+                # Load enriched rows into truth store
+                enriched_rows = merged.get("enriched_rows", []) or []
+                for row in enriched_rows:
+                    self._truth_store_ingest("discovery", row)
 
                 summary = (
                     f"Merge complete: enriched={merged.get('enriched_count', 0)} "
@@ -3641,6 +3662,21 @@ class TurnpointPurgerUI(tk.Tk):
     # -----------------------------------------------------------------------
     # Export + Cleanup handlers
     # -----------------------------------------------------------------------
+
+    def _open_in_file_manager(self, path):
+        """Open path in system file manager."""
+        target = Path(path).expanduser()
+        if not target.exists():
+            return
+        try:
+            if sys.platform.startswith("darwin"):
+                subprocess.Popen(["open", str(target)])
+            elif os.name == "nt":
+                os.startfile(str(target))  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
+        except Exception:
+            pass
 
     def _handle_export_truth_csv(self):
         """Export current truth view to CSV."""
@@ -3967,14 +4003,30 @@ class TurnpointPurgerUI(tk.Tk):
             )
             return
 
+        # Detect CSV format (reference vs discovery)
         imported_rows = []
+        detected_format = None
         try:
             with source.open("r", newline="", encoding="utf-8-sig") as fh:
                 reader = csv.DictReader(fh)
+                headers = reader.fieldnames or []
+
+                # Check if it's a discovery CSV (has "Parent Service Type" or "Service Variant Label")
+                if "Parent Service Type" in headers or "Service Variant Label" in headers:
+                    detected_format = "discovery"
+                elif "Service Type" in headers or "ID" in headers:
+                    detected_format = "reference"
+
                 for raw in reader:
-                    normalized = normalize_external_row(raw)
-                    if normalized.get("Service Type"):
-                        imported_rows.append(normalized)
+                    if detected_format == "discovery":
+                        # Discovery format - feed into truth store as discovery source
+                        if raw.get("Service Type ID"):
+                            imported_rows.append(dict(raw))
+                    else:
+                        # Reference format - normalize and feed as reference source
+                        normalized = normalize_external_row(raw)
+                        if normalized.get("Service Type"):
+                            imported_rows.append(normalized)
         except Exception as exc:
             messagebox.showerror(
                 "ServiceType → Rate Extractor",
@@ -3985,55 +4037,22 @@ class TurnpointPurgerUI(tk.Tk):
         if not imported_rows:
             messagebox.showinfo(
                 "ServiceType → Rate Extractor",
-                "Imported CSV has no valid ServiceType rows.",
+                "Imported CSV has no valid rows.",
             )
             return
-        self._load_rate_dataset(imported_rows, mode=RATE_MODE_METADATA)
-        self._enqueue_log(
-            self._timestamp(
-                f"[ServiceType→Rate] ImportCSV loaded {len(imported_rows)} row(s) from {source}"
-            )
-        )
-        self._append_rate_status(
-            self._timestamp(
-                f"ImportCSV loaded {len(imported_rows)} row(s) from {source}"
-            )
-        )
 
-        dialog = tk.Toplevel(self)
-        dialog.title("Import CSV")
-        dialog.configure(bg="#03060f")
-        dialog.resizable(False, False)
-        dialog.grab_set()
+        # Feed rows into truth store
+        self.truth_store.clear()
+        for row in imported_rows:
+            if detected_format == "discovery":
+                self._truth_store_ingest("discovery", row)
+            else:
+                self._truth_store_ingest("reference", row)
 
-        tk.Label(
-            dialog,
-            text="Choose export format",
-            fg="#a8d8ff",
-            bg="#03060f",
-            font=("Space Mono", 12, "bold"),
-        ).pack(padx=22, pady=(16, 10))
-
-        ttk.Button(
-            dialog,
-            text="Want in CSV?",
-            style="Cyber.TButton",
-            command=lambda: (dialog.destroy(), self._export_service_types_csv()),
-        ).pack(fill="x", padx=20, pady=(0, 8))
-
-        ttk.Button(
-            dialog,
-            text="Want in Excel?",
-            style="Cyber.TButton",
-            command=lambda: (dialog.destroy(), self._export_service_types_xlsx()),
-        ).pack(fill="x", padx=20, pady=(0, 12))
-
-        ttk.Button(
-            dialog,
-            text="Cancel",
-            style="Danger.TButton",
-            command=dialog.destroy,
-        ).pack(fill="x", padx=20, pady=(0, 16))
+        summary = f"Imported {len(imported_rows)} rows from {source} (detected as {detected_format} format)"
+        self._enqueue_log(self._timestamp(f"[ServiceType→Rate] {summary}"))
+        self._append_rate_status(self._timestamp(summary))
+        messagebox.showinfo("ServiceType → Rate Extractor", summary)
 
     def _export_service_types_csv(self):
         rows = list(self.rate_visible_rows or self.rate_all_rows)
