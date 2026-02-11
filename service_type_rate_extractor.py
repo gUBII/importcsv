@@ -11,6 +11,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 
 from importcsv import ARCHIVE_ROOT, build_chrome_driver, ensure_credentials, login, log_message
+import line_item_paths
 from selenium_helpers import click_js, wait_for
 
 # Canonical source for this module. Add Appointment is intentionally not used.
@@ -147,10 +148,9 @@ def normalize_external_row(raw_row: Dict[str, str]) -> Dict[str, str]:
 
 
 def _ensure_paths() -> tuple[Path, Path]:
-    output_root = (ARCHIVE_ROOT / "ServiceTypeRateExtractor").resolve()
-    download_dir = output_root / "_downloads"
-    output_root.mkdir(parents=True, exist_ok=True)
-    download_dir.mkdir(parents=True, exist_ok=True)
+    line_item_paths.ensure_structure()
+    output_root = line_item_paths.get_truth_root()
+    download_dir = line_item_paths.downloads_dir()
     return output_root, download_dir
 
 
@@ -731,11 +731,16 @@ def _write_xlsx(rows: List[Dict[str, str]], path: Path):
 
 
 def _save_outputs(rows: List[Dict[str, str]], output_root: Path, progress: ProgressCallback = None):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = output_root / f"ServiceTypes_{timestamp}.csv"
-    xlsx_path = output_root / f"ServiceTypes_{timestamp}.xlsx"
-    latest_csv = output_root / "ServiceTypes_latest.csv"
-    latest_xlsx = output_root / "ServiceTypes_latest.xlsx"
+    run_id = line_item_paths.make_run_id("CAPTURE")
+    paths = line_item_paths.get_reference_paths(run_id)
+
+    csv_path = paths["snapshot_csv"]
+    xlsx_path = paths["snapshot_xlsx"]
+    latest_csv = paths["latest_csv"]
+    latest_xlsx = paths["latest_xlsx"]
+
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    latest_csv.parent.mkdir(parents=True, exist_ok=True)
 
     _write_csv(rows, csv_path)
     shutil.copy2(csv_path, latest_csv)

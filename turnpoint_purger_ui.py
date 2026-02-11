@@ -55,6 +55,9 @@ from appointment_item_discovery import (
     load_discovery_latest,
     run_service_type_merge,
 )
+import line_item_paths
+from truth_store import TruthStore
+from tksheet import Sheet
 
 
 RATE_MODE_METADATA = "metadata"
@@ -226,31 +229,30 @@ class TurnpointPurgerUI(tk.Tk):
             value=str(Path(__file__).resolve().parent / "FormatforClient(Nexis)" / "clients-data.csv")
         )
 
-        # ServiceType -> Rate Extractor state
+        # ServiceType -> Rate Extractor state (Truth Table)
         self.rate_status_var = tk.StringVar(
             value="Idle // ServiceType rate extractor ready."
         )
-        self.rate_table = None
+        self.truth_store = TruthStore()
+        self.truth_store.on_change = self._on_truth_store_changed
+        self.truth_grid = None
         self.rate_running = False
         self.rate_capture_button = None
-        self.rate_export_button = None
-        self.rate_apply_button = None
-        self.rate_sort_combo = None
-        self.rate_deleted_checkbox = None
-        self.rate_positive_checkbox = None
-        self.rate_service_code_checkbox = None
-        self.rate_sil_checkbox = None
-        self.rate_search_entry = None
+        self.rate_import_button = None
+        self.rate_export_csv_button = None
+        self.rate_export_xlsx_button = None
+        self.rate_cleanup_button = None
         self.rate_log_view = None
-        self.rate_all_rows = []
-        self.rate_visible_rows = []
-        self.rate_sort_var = tk.StringVar(value="Service Type (A→Z)")
-        self.rate_deleted_no_var = tk.BooleanVar(value=True)
-        self.rate_positive_var = tk.BooleanVar(value=False)
-        self.rate_service_code_var = tk.BooleanVar(value=False)
-        self.rate_sil_var = tk.BooleanVar(value=False)
         self.rate_search_var = tk.StringVar(value="")
-        self.rate_table_mode = RATE_MODE_METADATA
+        self.rate_search_entry = None
+        self.rate_apply_button = None
+        self.rate_group_var = tk.StringVar(value="All Groups")
+        self.rate_group_combo = None
+        self.rate_status_strip = None
+        self.rate_inspector_frame = None
+        self.rate_inspector_text = None
+        self.rate_pending_refresh = False
+        self.rate_refresh_job_id = None
         self.discovery_probe_client_var = tk.StringVar(value="")
         self.discovery_headless_var = tk.BooleanVar(value=True)
         self.discovery_debug_var = tk.BooleanVar(value=False)
@@ -3464,6 +3466,402 @@ class TurnpointPurgerUI(tk.Tk):
 
         threading.Thread(target=task, daemon=True).start()
 
+    # -----------------------------------------------------------------------
+    # Truth Grid helpers
+    # -----------------------------------------------------------------------
+
+    def _on_truth_store_changed(self):
+        """Called by truth_store when data changes. Triggers debounced grid refresh."""
+        if not self.rate_pending_refresh:
+            self.rate_pending_refresh = True
+            self.rate_refresh_job_id = self.after(150, self._refresh_truth_grid)
+
+    def _refresh_truth_grid(self):
+        """Refresh the truth grid from the truth store."""
+        self.rate_pending_refresh = False
+        if not self.truth_grid:
+            return
+
+        group = self.rate_group_var.get()
+        if group == "All Groups":
+            records = self.truth_store.get_all_records()
+        else:
+            records = self.truth_store.get_records_for_parent(group)
+
+        search = self.rate_search_var.get().strip().lower()
+        if search:
+            filtered = []
+            for rec in records:
+                text = f"{rec.service_variant_label} {rec.service_type_id} {rec.truth_rate} {rec.truth_item_number}".lower()
+                if search in text:
+                    filtered.append(rec)
+            records = filtered
+
+        # Sort by parent, then variant, then ID
+        records = sorted(
+            records,
+            key=lambda r: (r.parent_service_type.lower(), r.service_variant_label.lower(), r.service_type_id),
+        )
+
+        # Build grid data
+        data = []
+        for rec in records:
+            row = [
+                rec.status.upper(),
+                rec.service_variant_label,
+                rec.service_type_id,
+                rec.truth_rate,
+                rec.truth_item_number,
+                rec.truth_rate_source,
+                rec.truth_item_source,
+                rec.updated_utc,
+            ]
+            data.append(row)
+
+        self.truth_grid.set_sheet_data(data)
+
+        # Apply row colors
+        for idx, rec in enumerate(records):
+            if rec.status == "red":
+                self.truth_grid.highlight_rows([idx], bg="#cc3333", fg="#ffffff")
+            elif rec.status == "yellow":
+                self.truth_grid.highlight_rows([idx], bg="#ccaa00", fg="#1a1a1a")
+            elif rec.status == "blue":
+                self.truth_grid.highlight_rows([idx], bg="#2266cc", fg="#ffffff")
+
+            # Per-cell conflict highlighting (mandatory)
+            if rec.rate_conflict:
+                self.truth_grid.highlight_cells(row=idx, column=3, bg="#cc0000", fg="#ffffff")
+            if rec.item_conflict:
+                self.truth_grid.highlight_cells(row=idx, column=4, bg="#cc0000", fg="#ffffff")
+
+        self._update_status_strip()
+        self._refresh_group_selector()
+
+    def _update_status_strip(self):
+        """Update the status strip with RED/YELLOW/BLUE counts."""
+        if not self.rate_status_strip:
+            return
+        counts = self.truth_store.get_status_counts()
+        now = datetime.now().strftime("%H:%M:%S")
+        text = f"RED: {counts['red']} | YELLOW: {counts['yellow']} | BLUE: {counts['blue']} | Conflicts: {counts['conflicts']} | Last: {now}"
+        self.rate_status_strip.config(text=text)
+
+    def _refresh_group_selector(self):
+        """Refresh the Service Group combobox with current parent groups."""
+        if not self.rate_group_combo:
+            return
+        groups = self.truth_store.get_parent_groups()
+        all_groups = ["All Groups"] + groups
+        self.rate_group_combo["values"] = all_groups
+
+    def _on_truth_row_selected(self, event):
+        """Show inspector panel when a truth grid row is clicked."""
+        if not self.truth_grid or not self.rate_inspector_text:
+            return
+
+        selected = self.truth_grid.get_currently_selected()
+        if not selected or not selected.rows:
+            return
+
+        row_idx = list(selected.rows)[0]
+        group = self.rate_group_var.get()
+        if group == "All Groups":
+            records = self.truth_store.get_all_records()
+        else:
+            records = self.truth_store.get_records_for_parent(group)
+
+        search = self.rate_search_var.get().strip().lower()
+        if search:
+            filtered = []
+            for rec in records:
+                text = f"{rec.service_variant_label} {rec.service_type_id} {rec.truth_rate} {rec.truth_item_number}".lower()
+                if search in text:
+                    filtered.append(rec)
+            records = filtered
+
+        records = sorted(
+            records,
+            key=lambda r: (r.parent_service_type.lower(), r.service_variant_label.lower(), r.service_type_id),
+        )
+
+        if row_idx >= len(records):
+            return
+
+        rec = records[row_idx]
+        self._show_inspector(rec)
+
+    def _show_inspector(self, rec):
+        """Populate the inspector panel with truth record details."""
+        if not self.rate_inspector_text:
+            return
+
+        self.rate_inspector_text.config(state="normal")
+        self.rate_inspector_text.delete("1.0", "end")
+
+        self.rate_inspector_text.insert("end", f"{rec.service_variant_label}\n", "heading")
+        self.rate_inspector_text.insert("end", f"Service Type ID: {rec.service_type_id}\n\n", "subheading")
+
+        self.rate_inspector_text.insert("end", "Rate Candidates:\n", "label")
+        if rec.rate_candidates:
+            for src, cand in rec.rate_candidates.items():
+                self.rate_inspector_text.insert("end", f"  {src}: {cand.value} (updated: {cand.updated_utc})\n")
+        else:
+            self.rate_inspector_text.insert("end", "  (none)\n")
+
+        self.rate_inspector_text.insert("end", "\nItem Number Candidates:\n", "label")
+        if rec.item_candidates:
+            for src, cand in rec.item_candidates.items():
+                self.rate_inspector_text.insert("end", f"  {src}: {cand.value} (updated: {cand.updated_utc})\n")
+        else:
+            self.rate_inspector_text.insert("end", "  (none)\n")
+
+        if rec.rate_conflict:
+            self.rate_inspector_text.insert("end", "\nRate Conflict:\n", "conflict")
+            vals = set(c.value for c in rec.rate_candidates.values() if c.value)
+            self.rate_inspector_text.insert("end", f"  Disagreeing values: {', '.join(vals)}\n")
+
+        if rec.item_conflict:
+            self.rate_inspector_text.insert("end", "\nItem Number Conflict:\n", "conflict")
+            vals = set(c.value for c in rec.item_candidates.values() if c.value)
+            self.rate_inspector_text.insert("end", f"  Disagreeing values: {', '.join(vals)}\n")
+
+        if rec.service_type_link:
+            self.rate_inspector_text.insert("end", f"\nServiceTypeLink:\n{rec.service_type_link}\n", "link")
+
+        self.rate_inspector_text.config(state="disabled")
+
+    def _truth_store_ingest(self, source, row):
+        """Thread-safe ingestion into truth store. Called from on_row callbacks."""
+        if source == "reference":
+            self.truth_store.upsert_reference(row)
+        elif source == "discovery":
+            self.truth_store.upsert_discovery(row)
+
+    # -----------------------------------------------------------------------
+    # Export + Cleanup handlers
+    # -----------------------------------------------------------------------
+
+    def _handle_export_truth_csv(self):
+        """Export current truth view to CSV."""
+        if self.rate_running or self.discovery_running:
+            return
+
+        group = self.rate_group_var.get()
+        if group == "All Groups":
+            records = self.truth_store.get_all_records()
+        else:
+            records = self.truth_store.get_records_for_parent(group)
+
+        search = self.rate_search_var.get().strip().lower()
+        if search:
+            filtered = []
+            for rec in records:
+                text = f"{rec.service_variant_label} {rec.service_type_id} {rec.truth_rate} {rec.truth_item_number}".lower()
+                if search in text:
+                    filtered.append(rec)
+            records = filtered
+
+        records = sorted(
+            records,
+            key=lambda r: (r.parent_service_type.lower(), r.service_variant_label.lower(), r.service_type_id),
+        )
+
+        if not records:
+            messagebox.showinfo("ServiceType → Rate Extractor", "No rows to export.")
+            return
+
+        run_id = line_item_paths.make_run_id("EXPORT")
+        path = line_item_paths.get_export_path(run_id, "csv")
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        fieldnames = [
+            "Parent Service Type",
+            "Service Variant Label",
+            "Service Type ID",
+            "Status",
+            "Rate (Truth)",
+            "Rate Source",
+            "Item Number (Truth)",
+            "Item Source",
+            "Rate Conflict",
+            "Item Conflict",
+            "Updated (UTC)",
+        ]
+
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            for rec in records:
+                writer.writerow({
+                    "Parent Service Type": rec.parent_service_type,
+                    "Service Variant Label": rec.service_variant_label,
+                    "Service Type ID": rec.service_type_id,
+                    "Status": rec.status.upper(),
+                    "Rate (Truth)": rec.truth_rate,
+                    "Rate Source": rec.truth_rate_source,
+                    "Item Number (Truth)": rec.truth_item_number,
+                    "Item Source": rec.truth_item_source,
+                    "Rate Conflict": "Yes" if rec.rate_conflict else "No",
+                    "Item Conflict": "Yes" if rec.item_conflict else "No",
+                    "Updated (UTC)": rec.updated_utc,
+                })
+
+        self._enqueue_log(self._timestamp(f"[TruthView] CSV exported -> {path}"))
+        messagebox.showinfo("ServiceType → Rate Extractor", f"Exported CSV to:\n{path}")
+        self._open_in_file_manager(path.parent)
+
+    def _handle_export_truth_xlsx(self):
+        """Export current truth view to XLSX."""
+        if self.rate_running or self.discovery_running:
+            return
+
+        group = self.rate_group_var.get()
+        if group == "All Groups":
+            records = self.truth_store.get_all_records()
+        else:
+            records = self.truth_store.get_records_for_parent(group)
+
+        search = self.rate_search_var.get().strip().lower()
+        if search:
+            filtered = []
+            for rec in records:
+                text = f"{rec.service_variant_label} {rec.service_type_id} {rec.truth_rate} {rec.truth_item_number}".lower()
+                if search in text:
+                    filtered.append(rec)
+            records = filtered
+
+        records = sorted(
+            records,
+            key=lambda r: (r.parent_service_type.lower(), r.service_variant_label.lower(), r.service_type_id),
+        )
+
+        if not records:
+            messagebox.showinfo("ServiceType → Rate Extractor", "No rows to export.")
+            return
+
+        run_id = line_item_paths.make_run_id("EXPORT")
+        path = line_item_paths.get_export_path(run_id, "xlsx")
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            from openpyxl import Workbook
+        except Exception as exc:
+            messagebox.showerror("ServiceType → Rate Extractor", f"Excel export requires openpyxl:\n{exc}")
+            return
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "TruthView"
+        sheet.append([
+            "Parent Service Type",
+            "Service Variant Label",
+            "Service Type ID",
+            "Status",
+            "Rate (Truth)",
+            "Rate Source",
+            "Item Number (Truth)",
+            "Item Source",
+            "Rate Conflict",
+            "Item Conflict",
+            "Updated (UTC)",
+        ])
+        for rec in records:
+            sheet.append([
+                rec.parent_service_type,
+                rec.service_variant_label,
+                rec.service_type_id,
+                rec.status.upper(),
+                rec.truth_rate,
+                rec.truth_rate_source,
+                rec.truth_item_number,
+                rec.truth_item_source,
+                "Yes" if rec.rate_conflict else "No",
+                "Yes" if rec.item_conflict else "No",
+                rec.updated_utc,
+            ])
+        workbook.save(path)
+
+        self._enqueue_log(self._timestamp(f"[TruthView] XLSX exported -> {path}"))
+        messagebox.showinfo("ServiceType → Rate Extractor", f"Exported XLSX to:\n{path}")
+        self._open_in_file_manager(path.parent)
+
+    def _handle_clean_rate_clutter(self):
+        """Clean up old snapshots, keep latest + last 20."""
+        if self.rate_running or self.discovery_running:
+            messagebox.showwarning("ServiceType → Rate Extractor", "Cannot clean while tasks are running.")
+            return
+
+        run_id = line_item_paths.make_run_id("CLEANUP")
+        log_path = line_item_paths.cleanup_logs_dir() / f"cleanup_{run_id}.txt"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        deleted_files = []
+        kept_files = []
+        bytes_reclaimed = 0
+
+        with log_path.open("w", encoding="utf-8") as log:
+            log.write(f"Cleanup run: {run_id}\n")
+            log.write(f"Retention: keep latest + last 20 snapshots\n\n")
+
+            # Clean each snapshot category
+            for snap_dir in [
+                line_item_paths.reference_snapshots_dir(),
+                line_item_paths.discovery_snapshots_dir(),
+                line_item_paths.enriched_snapshots_dir(),
+            ]:
+                if not snap_dir.exists():
+                    continue
+
+                files = sorted(snap_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+                files = [f for f in files if f.is_file()]
+
+                keep = files[:20]
+                delete = files[20:]
+
+                for f in keep:
+                    kept_files.append(str(f))
+                    log.write(f"KEEP: {f}\n")
+
+                for f in delete:
+                    size = f.stat().st_size
+                    f.unlink()
+                    deleted_files.append(str(f))
+                    bytes_reclaimed += size
+                    log.write(f"DELETE: {f} ({size} bytes)\n")
+
+            # Clean downloads
+            dl_dir = line_item_paths.downloads_dir()
+            if dl_dir.exists():
+                files = sorted(dl_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+                files = [f for f in files if f.is_file()]
+                delete = files[20:]
+                for f in delete:
+                    size = f.stat().st_size
+                    f.unlink()
+                    deleted_files.append(str(f))
+                    bytes_reclaimed += size
+                    log.write(f"DELETE (downloads): {f} ({size} bytes)\n")
+
+            log.write(f"\nSummary:\n")
+            log.write(f"  Deleted: {len(deleted_files)} files\n")
+            log.write(f"  Reclaimed: {bytes_reclaimed} bytes ({bytes_reclaimed / 1024 / 1024:.2f} MB)\n")
+            log.write(f"  Kept: {len(kept_files)} files\n")
+
+        summary = (
+            f"Cleanup complete:\n\n"
+            f"Deleted: {len(deleted_files)} files\n"
+            f"Reclaimed: {bytes_reclaimed / 1024 / 1024:.2f} MB\n"
+            f"Kept: {len(kept_files)} files\n\n"
+            f"Log: {log_path}"
+        )
+        self._enqueue_log(self._timestamp(f"[Cleanup] {summary}"))
+        messagebox.showinfo("Clean Rate Clutter", summary)
+
+    # -----------------------------------------------------------------------
+    # Original rate extractor handlers (updated for truth store)
+    # -----------------------------------------------------------------------
+
     def _handle_capture_live_rates(self):
         if self.rate_running:
             return
@@ -3473,22 +3871,15 @@ class TurnpointPurgerUI(tk.Tk):
                 "Wait for appointment discovery/merge to finish before running metadata capture.",
             )
             return
-        self._configure_rate_table_for_metadata()
-        self._clear_rate_table()
-        self.rate_all_rows = []
-        self.rate_visible_rows = []
+
+        self.truth_store.clear()
         self._set_rate_running(True)
         started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.rate_status_var.set(f"ServiceType rate capture in progress (started {started_at})...")
         self._append_rate_status(self._timestamp(f"Capture started at {started_at}"))
 
         def on_row(row):
-            def add_row():
-                normalized = {column: str(row.get(column, "")) for column in DATASET_COLUMNS}
-                self.rate_all_rows.append(normalized)
-                if self._rate_row_matches_filters(normalized):
-                    self._insert_rate_preview_row(normalized)
-            self.after(0, add_row)
+            self.after(0, lambda r=dict(row): self._truth_store_ingest("reference", r))
 
         def on_progress(message):
             plain = str(message or "").strip()
@@ -3512,7 +3903,6 @@ class TurnpointPurgerUI(tk.Tk):
                 csv_path = result.get("csv_path", "")
                 xlsx_path = result.get("xlsx_path", "")
                 selected_page_size = result.get("selected_page_size", "")
-                self.after(0, self._apply_rate_filters)
                 summary = (
                     f"Capture complete ({method}, psize={selected_page_size}): {len(rows)} row(s).\n"
                     f"CSV: {csv_path}\nXLSX: {xlsx_path}"

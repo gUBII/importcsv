@@ -27,6 +27,9 @@ a = Analysis(
     hiddenimports=[
         "NDISBUDGETER",
         "importcsv",
+        "line_item_paths",
+        "truth_store",
+        "tksheet",
         "PIL",
         "PIL.Image",
         "PIL.ImageTk",

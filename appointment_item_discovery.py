@@ -21,6 +21,7 @@ from importcsv import (
     login,
     log_message,
 )
+import line_item_paths
 from selenium_helpers import wait_for
 from service_type_rate_extractor import DATASET_COLUMNS
 
@@ -84,12 +85,8 @@ CHECKER_FIELDS = [
     "artifact_html",
 ]
 
-REFERENCE_LATEST_CSV = (
-    ARCHIVE_ROOT / "ServiceTypeRateExtractor" / "ServiceTypes_latest.csv"
-).resolve()
-DISCOVERY_LATEST_CSV = (
-    ARCHIVE_ROOT / "ServiceTypeRateExtractor" / "AppointmentItemDiscovery_latest.csv"
-).resolve()
+REFERENCE_LATEST_CSV = line_item_paths.reference_latest_csv()
+DISCOVERY_LATEST_CSV = line_item_paths.discovery_latest_csv()
 
 CHECKER_CLIENT = "CHK_CLIENT_PAGE_OPEN"
 CHECKER_APPOINTMENT = "CHK_APPOINTMENT_ENTRY_REACHED"
@@ -142,9 +139,10 @@ def _safe_json(value) -> str:
 
 
 def _ensure_output_paths(run_id: str) -> Tuple[Path, Path]:
-    output_root = (ARCHIVE_ROOT / "ServiceTypeRateExtractor").resolve()
-    diagnostics_root = output_root / "diagnostics" / run_id
-    output_root.mkdir(parents=True, exist_ok=True)
+    line_item_paths.ensure_structure()
+    output_root = line_item_paths.get_truth_root()
+    disc_paths = line_item_paths.get_discovery_paths(run_id)
+    diagnostics_root = disc_paths["diagnostics_dir"]
     diagnostics_root.mkdir(parents=True, exist_ok=True)
     return output_root, diagnostics_root
 
@@ -229,17 +227,34 @@ def _save_dataset_outputs(
     prefix: str,
     latest_name: str,
     progress: ProgressCallback = None,
+    snapshot_csv: Path | None = None,
+    snapshot_xlsx: Path | None = None,
+    latest_csv: Path | None = None,
+    latest_xlsx: Path | None = None,
 ) -> Dict[str, object]:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = output_root / f"{prefix}_{timestamp}.csv"
-    xlsx_path = output_root / f"{prefix}_{timestamp}.xlsx"
-    latest_csv = output_root / latest_name
-    latest_xlsx = output_root / latest_name.replace(".csv", ".xlsx")
+    # If explicit paths provided (from line_item_paths), use them directly.
+    # Otherwise fall back to the legacy flat layout for backward compat.
+    if snapshot_csv is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        snapshot_csv = output_root / f"{prefix}_{timestamp}.csv"
+        snapshot_xlsx_p = output_root / f"{prefix}_{timestamp}.xlsx"
+        latest_csv_p = output_root / latest_name
+        latest_xlsx_p = output_root / latest_name.replace(".csv", ".xlsx")
+    else:
+        snapshot_xlsx_p = snapshot_xlsx or snapshot_csv.with_suffix(".xlsx")
+        latest_csv_p = latest_csv or output_root / latest_name
+        latest_xlsx_p = latest_xlsx or latest_csv_p.with_suffix(".xlsx")
+
+    csv_path = snapshot_csv
+    xlsx_path = snapshot_xlsx_p
+
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    latest_csv_p.parent.mkdir(parents=True, exist_ok=True)
 
     _write_csv(rows, fieldnames, csv_path)
-    shutil.copy2(csv_path, latest_csv)
+    shutil.copy2(csv_path, latest_csv_p)
     xlsx_sanitization = _write_xlsx(rows, fieldnames, xlsx_path)
-    shutil.copy2(xlsx_path, latest_xlsx)
+    shutil.copy2(xlsx_path, latest_xlsx_p)
 
     _emit(f"[ItemDiscovery] wrote CSV: {csv_path}", progress)
     _emit(f"[ItemDiscovery] wrote XLSX: {xlsx_path}", progress)
@@ -259,8 +274,8 @@ def _save_dataset_outputs(
     return {
         "csv_path": csv_path,
         "xlsx_path": xlsx_path,
-        "latest_csv": latest_csv,
-        "latest_xlsx": latest_xlsx,
+        "latest_csv": latest_csv_p,
+        "latest_xlsx": latest_xlsx_p,
         "xlsx_sanitization": xlsx_sanitization,
     }
 
@@ -1770,15 +1785,19 @@ def _fetch_service_type_details(
     return details
 
 
+RowCallback = Optional[Callable[[Dict[str, str]], None]]
+
+
 def discover_appointment_item_numbers(
     headless: bool = True,
     probe_client_id=None,
     on_progress: ProgressCallback = None,
     on_event: EventCallback = None,
     discovery_debug: bool = False,
+    on_row: RowCallback = None,
 ) -> Dict[str, object]:
     ensure_credentials()
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = line_item_paths.make_run_id("DISC")
     output_root, diagnostics_folder = _ensure_output_paths(run_id)
     recorder = DiagnosticsRecorder(
         run_id=run_id,
@@ -1907,6 +1926,12 @@ def discover_appointment_item_numbers(
                 else:
                     counters["rows_missing_item_number"] += 1
 
+                if on_row:
+                    try:
+                        on_row(dict(row))
+                    except Exception:
+                        pass
+
                 if discovery_debug:
                     recorder.emit_event(
                         level="DEBUG",
@@ -1941,12 +1966,20 @@ def discover_appointment_item_numbers(
             )
             item = _normalize_text(details.get("item_number", ""))
             rate = _normalize_text(details.get("rate", ""))
+            enriched = False
             if item:
                 row["Item Number"] = item
                 row["Service Code"] = item
+                enriched = True
             if not row.get("Rate") and rate:
                 row["Rate"] = rate
                 row["Rate Source"] = "service_type_details"
+                enriched = True
+            if enriched and on_row:
+                try:
+                    on_row(dict(row))
+                except Exception:
+                    pass
 
         coverage = count_item_number_coverage(rows)
         counters["rows_with_item_number"] = coverage["rows_with_item_number"]
@@ -1954,6 +1987,7 @@ def discover_appointment_item_numbers(
         counters["details_pages_queried"] = len(details_cache)
         counters["item_number_resolved_count"] = coverage["rows_with_item_number"]
         counters["item_number_missing_after_details_count"] = coverage["rows_missing_item_number"]
+        disc_paths = line_item_paths.get_discovery_paths(run_id)
         saved = _save_dataset_outputs(
             rows,
             DISCOVERY_COLUMNS,
@@ -1961,6 +1995,10 @@ def discover_appointment_item_numbers(
             prefix="AppointmentItemDiscovery",
             latest_name="AppointmentItemDiscovery_latest.csv",
             progress=on_progress,
+            snapshot_csv=disc_paths["snapshot_csv"],
+            snapshot_xlsx=disc_paths["snapshot_xlsx"],
+            latest_csv=disc_paths["latest_csv"],
+            latest_xlsx=disc_paths["latest_xlsx"],
         )
 
         summary = {
@@ -2108,10 +2146,13 @@ def run_service_type_merge(
     output_root: Optional[Path] = None,
     progress: ProgressCallback = None,
 ) -> Dict[str, object]:
-    target_root = output_root or (ARCHIVE_ROOT / "ServiceTypeRateExtractor").resolve()
+    target_root = output_root or line_item_paths.get_truth_root()
     target_root.mkdir(parents=True, exist_ok=True)
     reference_rows = _load_csv_rows(reference_csv)
     merged = merge_discovery_with_service_types(reference_rows, discovered_rows)
+
+    run_id = line_item_paths.make_run_id("MERGE")
+    enr_paths = line_item_paths.get_enriched_paths(run_id)
 
     enriched_saved = _save_dataset_outputs(
         merged["enriched_rows"],
@@ -2120,6 +2161,10 @@ def run_service_type_merge(
         prefix="ServiceTypes_enriched",
         latest_name="ServiceTypes_enriched_latest.csv",
         progress=progress,
+        snapshot_csv=enr_paths["enriched_snapshot_csv"],
+        snapshot_xlsx=enr_paths["enriched_snapshot_xlsx"],
+        latest_csv=enr_paths["enriched_latest_csv"],
+        latest_xlsx=enr_paths["enriched_latest_xlsx"],
     )
     unmatched_saved = _save_dataset_outputs(
         merged["unmatched_rows"],
@@ -2128,6 +2173,10 @@ def run_service_type_merge(
         prefix="ServiceTypes_unmatched_discovery",
         latest_name="ServiceTypes_unmatched_discovery_latest.csv",
         progress=progress,
+        snapshot_csv=enr_paths["unmatched_snapshot_csv"],
+        snapshot_xlsx=enr_paths["unmatched_snapshot_xlsx"],
+        latest_csv=enr_paths["unmatched_latest_csv"],
+        latest_xlsx=enr_paths["unmatched_latest_xlsx"],
     )
     return {
         **merged,
