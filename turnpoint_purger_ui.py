@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -166,6 +167,8 @@ class TurnpointPurgerUI(tk.Tk):
         self.rate_status_strip = None
         self.rate_inspector_frame = None
         self.rate_inspector_text = None
+        self._inspector_link_frame = None
+        self.rate_freeze_var = tk.BooleanVar(value=False)
         self.rate_pending_refresh = False
         self.rate_refresh_job_id = None
         self.discovery_probe_client_var = tk.StringVar(value="")
@@ -1471,6 +1474,20 @@ class TurnpointPurgerUI(tk.Tk):
         )
         self.rate_apply_button.grid(row=0, column=4, sticky="w")
 
+        freeze_cb = tk.Checkbutton(
+            filters,
+            text="Freeze View",
+            variable=self.rate_freeze_var,
+            bg="#050b16",
+            fg="#9fe3ff",
+            selectcolor="#0a1324",
+            activebackground="#050b16",
+            activeforeground="#18e0ff",
+            font=("Space Mono", 10),
+            command=self._on_freeze_toggled,
+        )
+        freeze_cb.grid(row=0, column=5, sticky="w", padx=(12, 0))
+
         # ---- TRUTH GRID (left) + INSPECTOR (right) ----
         grid_frame = tk.Frame(parent, bg="#050b16")
         grid_frame.grid(row=3, column=0, sticky="nsew", padx=(24, 8), pady=(0, 16))
@@ -1491,6 +1508,8 @@ class TurnpointPurgerUI(tk.Tk):
             ],
             show_x_scrollbar=True,
             show_y_scrollbar=True,
+            tooltips=True,
+            tooltip_hover_delay=800,
         )
         self.truth_grid.enable_bindings(
             "single_select",
@@ -3296,6 +3315,8 @@ class TurnpointPurgerUI(tk.Tk):
 
     def _on_truth_store_changed(self):
         """Called by truth_store when data changes. Triggers debounced grid refresh."""
+        if self.rate_freeze_var.get():
+            return
         if not self.rate_pending_refresh:
             self.rate_pending_refresh = True
             self.rate_refresh_job_id = self.after(150, self._refresh_truth_grid)
@@ -3356,8 +3377,12 @@ class TurnpointPurgerUI(tk.Tk):
             # Per-cell conflict highlighting (mandatory)
             if rec.rate_conflict:
                 self.truth_grid.highlight_cells(row=idx, column=3, bg="#cc0000", fg="#ffffff")
+                parts = [f"{src}: {c.value}" for src, c in rec.rate_candidates.items() if c.value]
+                self.truth_grid.note((idx, 3), note="CONFLICT\n" + " vs ".join(parts), readonly=True)
             if rec.item_conflict:
                 self.truth_grid.highlight_cells(row=idx, column=4, bg="#cc0000", fg="#ffffff")
+                parts = [f"{src}: {c.value}" for src, c in rec.item_candidates.items() if c.value]
+                self.truth_grid.note((idx, 4), note="CONFLICT\n" + " vs ".join(parts), readonly=True)
 
         self._update_status_strip()
         self._refresh_group_selector()
@@ -3378,6 +3403,11 @@ class TurnpointPurgerUI(tk.Tk):
         groups = self.truth_store.get_parent_groups()
         all_groups = ["All Groups"] + groups
         self.rate_group_combo["values"] = all_groups
+
+    def _on_freeze_toggled(self):
+        """Handle Freeze View checkbox toggle."""
+        if not self.rate_freeze_var.get():
+            self._refresh_truth_grid()
 
     def _on_truth_row_selected(self, event):
         """Show inspector panel when a truth grid row is clicked."""
@@ -3454,6 +3484,42 @@ class TurnpointPurgerUI(tk.Tk):
             self.rate_inspector_text.insert("end", f"\nServiceTypeLink:\n{rec.service_type_link}\n", "link")
 
         self.rate_inspector_text.config(state="disabled")
+
+        # Link action buttons
+        if self._inspector_link_frame:
+            self._inspector_link_frame.destroy()
+            self._inspector_link_frame = None
+
+        if rec.service_type_link:
+            link_url = rec.service_type_link
+            btn_frame = tk.Frame(self.rate_inspector_frame, bg="#0a1324")
+            btn_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+            tk.Button(
+                btn_frame,
+                text="Copy Link",
+                font=("Space Mono", 9),
+                bg="#1f3e66",
+                fg="#d8f1ff",
+                activebackground="#2a5080",
+                activeforeground="#ffffff",
+                relief="flat",
+                command=lambda u=link_url: (self.clipboard_clear(), self.clipboard_append(u)),
+            ).pack(side="left", padx=(0, 6))
+
+            tk.Button(
+                btn_frame,
+                text="Open in Browser",
+                font=("Space Mono", 9),
+                bg="#1f3e66",
+                fg="#d8f1ff",
+                activebackground="#2a5080",
+                activeforeground="#ffffff",
+                relief="flat",
+                command=lambda u=link_url: webbrowser.open(u),
+            ).pack(side="left")
+
+            self._inspector_link_frame = btn_frame
 
     def _truth_store_ingest(self, source, row):
         """Thread-safe ingestion into truth store. Called from on_row callbacks."""
