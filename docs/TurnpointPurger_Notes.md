@@ -15,7 +15,7 @@ This document captures the end-to-end context so future engineers can onboard qu
 2. `pip install --upgrade pip`
 3. `pip install -e .`
 4. `pip install pyinstaller`
-5. *(optional)* `python Declutter.py` to prune `build/`, `dist/`, `egg-info`, `.DS_Store`, `__pycache__`.
+5. *(optional)* `python Declutter.py` to prune build outputs and cache/temp clutter (`build/`, `dist/`, `htmlcov/`, `egg-info`, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.coverage*`, `.DS_Store`, `Thumbs.db`, and common temp files). Use `--skip-temp-files` to keep generic temp files.
 6. `pyinstaller turnpoint_gui.spec` → `dist\windows\TurnpointPurger\`
 7. `pyinstaller turnpoint_cli.spec` → `dist\windows\TurnpointPurgerCLI\`
 8. Alternatively run `python build.py --gui --cli` to populate both directories in one shot.

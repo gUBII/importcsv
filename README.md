@@ -120,7 +120,7 @@ turnpoint-budgeter       # standalone budget export helper
 2. `pip install --upgrade pip`
 3. `pip install -e .`
 4. `pip install pyinstaller`
-5. *(optional)* `python Declutter.py` to remove previous `build/`, `dist/`, `.egg-info`, `.DS_Store`, and `__pycache__`.
+5. *(optional)* `python Declutter.py` to remove previous build outputs plus cache/temp clutter (`build/`, `dist/`, `htmlcov/`, `*.egg-info`, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.coverage*`, `.DS_Store`, `Thumbs.db`, and common temp files). Use `python Declutter.py --skip-temp-files` to keep generic `*.tmp`/swap files.
 6. `pyinstaller turnpoint_gui.spec` → GUI bundle (`dist\windows\TurnpointPurger\`)
 7. `pyinstaller turnpoint_cli.spec` → CLI bundle (`dist\windows\TurnpointPurgerCLI\`)
 8. Alternatively run `python build.py --gui --cli` to produce both in one shot.
@@ -130,10 +130,7 @@ turnpoint-budgeter       # standalone budget export helper
 - All output folders live under `~/PurgedClients/` (override via `PURGED_ARCHIVE_ROOT`) with sequential NexisIDs to avoid collisions.
 - Duplicate client IDs are detected; the tool emits a `_duplicate_reports/<client>.csv` ledger showing the last purge timestamp before allowing a rerun.
 - Persistent stats (`~/.turnpoint_purger/purger_state.json`) drive the UI summary table and CLI logs.
-- The build helper writes intermediates to `build/` and final binaries into `dist/<platform>/`. Clean them up between releases with:
-  ```bash
-  rm -rf build dist __pycache__
-  ```
+- The build helper writes intermediates to `build/` and final binaries into `dist/<platform>/`. Clean them up between releases with `python Declutter.py` (or inspect first with `python Declutter.py --dry-run`).
 
 Refer to `PACKAGING.md` for deeper build/customization steps.
 - **Upcoming work:** appointments + invoices automation are next on the roadmap; hooks are being designed so future releases can pull those directly into Nexis alongside workers/clients.

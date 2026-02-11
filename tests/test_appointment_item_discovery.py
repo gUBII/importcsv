@@ -2,6 +2,8 @@ import csv
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -398,3 +400,39 @@ def test_count_item_number_coverage():
     counts = discovery.count_item_number_coverage(rows)
     assert counts["rows_with_item_number"] == 2
     assert counts["rows_missing_item_number"] == 1
+
+
+def test_save_dataset_outputs_sanitizes_excel_illegal_chars(tmp_path):
+    openpyxl = pytest.importorskip("openpyxl")
+    bad_value = "Life Transition Planning Including Mentoring, Peer\x02Support"
+    rows = [
+        {
+            "Parent Service Type": bad_value,
+            "Service Variant Label": bad_value,
+            "Service Type ID": "99999",
+            "Item Number": "",
+            "Service Code": "",
+            "Rate": "",
+            "Rate Source": "",
+            "Unit Type": "",
+            "Setter Value": "",
+            "Payload JSON": "{}",
+            "Source Client ID": "127005",
+            "Captured At (UTC)": "2026-02-11T00:00:00+00:00",
+        }
+    ]
+    saved = discovery._save_dataset_outputs(
+        rows,
+        discovery.DISCOVERY_COLUMNS,
+        tmp_path,
+        prefix="AppointmentItemDiscovery",
+        latest_name="AppointmentItemDiscovery_latest.csv",
+    )
+    stats = saved["xlsx_sanitization"]
+    assert stats["rows_sanitized"] == 1
+    assert stats["cells_sanitized"] == 2
+    assert stats["chars_removed"] == 2
+    workbook = openpyxl.load_workbook(saved["xlsx_path"])
+    sheet = workbook.active
+    assert sheet.cell(row=2, column=1).value == bad_value.replace("\x02", "")
+    assert sheet.cell(row=2, column=2).value == bad_value.replace("\x02", "")

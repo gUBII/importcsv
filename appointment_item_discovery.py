@@ -26,6 +26,7 @@ from service_type_rate_extractor import DATASET_COLUMNS
 
 ProgressCallback = Optional[Callable[[str], None]]
 EventCallback = Optional[Callable[[Dict[str, str]], None]]
+EXCEL_ILLEGAL_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 
 DISCOVERY_COLUMNS = [
     "Parent Service Type",
@@ -156,7 +157,13 @@ def _write_csv(rows: List[Dict[str, str]], fieldnames: List[str], path: Path):
             writer.writerow({column: row.get(column, "") for column in fieldnames})
 
 
-def _write_xlsx(rows: List[Dict[str, str]], fieldnames: List[str], path: Path):
+def _sanitize_excel_text(value) -> Tuple[str, int]:
+    text = "" if value is None else str(value)
+    sanitized, substitutions = EXCEL_ILLEGAL_CHAR_RE.subn("", text)
+    return sanitized, substitutions
+
+
+def _write_xlsx(rows: List[Dict[str, str]], fieldnames: List[str], path: Path) -> Dict[str, object]:
     try:
         from openpyxl import Workbook
     except Exception as exc:
@@ -165,10 +172,53 @@ def _write_xlsx(rows: List[Dict[str, str]], fieldnames: List[str], path: Path):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Dataset"
-    sheet.append(fieldnames)
-    for row in rows:
-        sheet.append([row.get(column, "") for column in fieldnames])
+    header: List[str] = []
+    header_cells_sanitized = 0
+    header_chars_removed = 0
+    for column in fieldnames:
+        sanitized, substitutions = _sanitize_excel_text(column)
+        header.append(sanitized)
+        if substitutions:
+            header_cells_sanitized += 1
+            header_chars_removed += substitutions
+    sheet.append(header)
+
+    rows_sanitized = 0
+    cells_sanitized = 0
+    chars_removed = 0
+    samples: List[Dict[str, object]] = []
+    for row_index, row in enumerate(rows, start=2):
+        values: List[str] = []
+        row_fields_sanitized: List[str] = []
+        row_chars_removed = 0
+        for column in fieldnames:
+            sanitized, substitutions = _sanitize_excel_text(row.get(column, ""))
+            values.append(sanitized)
+            if substitutions:
+                row_fields_sanitized.append(column)
+                row_chars_removed += substitutions
+        if row_fields_sanitized:
+            rows_sanitized += 1
+            cells_sanitized += len(row_fields_sanitized)
+            chars_removed += row_chars_removed
+            if len(samples) < 5:
+                samples.append(
+                    {
+                        "row_index": row_index,
+                        "fields": row_fields_sanitized,
+                        "chars_removed": row_chars_removed,
+                    }
+                )
+        sheet.append(values)
     workbook.save(path)
+    return {
+        "rows_sanitized": rows_sanitized,
+        "cells_sanitized": cells_sanitized,
+        "chars_removed": chars_removed,
+        "header_cells_sanitized": header_cells_sanitized,
+        "header_chars_removed": header_chars_removed,
+        "samples": samples,
+    }
 
 
 def _save_dataset_outputs(
@@ -179,7 +229,7 @@ def _save_dataset_outputs(
     prefix: str,
     latest_name: str,
     progress: ProgressCallback = None,
-) -> Dict[str, Path]:
+) -> Dict[str, object]:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = output_root / f"{prefix}_{timestamp}.csv"
     xlsx_path = output_root / f"{prefix}_{timestamp}.xlsx"
@@ -188,16 +238,30 @@ def _save_dataset_outputs(
 
     _write_csv(rows, fieldnames, csv_path)
     shutil.copy2(csv_path, latest_csv)
-    _write_xlsx(rows, fieldnames, xlsx_path)
+    xlsx_sanitization = _write_xlsx(rows, fieldnames, xlsx_path)
     shutil.copy2(xlsx_path, latest_xlsx)
 
     _emit(f"[ItemDiscovery] wrote CSV: {csv_path}", progress)
     _emit(f"[ItemDiscovery] wrote XLSX: {xlsx_path}", progress)
+    if (
+        int(xlsx_sanitization.get("rows_sanitized", 0)) > 0
+        or int(xlsx_sanitization.get("header_cells_sanitized", 0)) > 0
+    ):
+        _emit(
+            (
+                "[ItemDiscovery] sanitized Excel-illegal control characters "
+                f"for '{prefix}': rows={xlsx_sanitization.get('rows_sanitized', 0)}, "
+                f"cells={xlsx_sanitization.get('cells_sanitized', 0)}, "
+                f"chars_removed={xlsx_sanitization.get('chars_removed', 0)}."
+            ),
+            progress,
+        )
     return {
         "csv_path": csv_path,
         "xlsx_path": xlsx_path,
         "latest_csv": latest_csv,
         "latest_xlsx": latest_xlsx,
+        "xlsx_sanitization": xlsx_sanitization,
     }
 
 
@@ -1916,6 +1980,7 @@ def discover_appointment_item_numbers(
             "discovery_xlsx_path": str(saved["xlsx_path"]),
             "discovery_latest_csv": str(saved["latest_csv"]),
             "discovery_latest_xlsx": str(saved["latest_xlsx"]),
+            "discovery_xlsx_sanitization": saved.get("xlsx_sanitization", {}),
         }
         recorder.write_summary(summary)
         recorder.emit_event(
@@ -2071,10 +2136,12 @@ def run_service_type_merge(
         "enriched_xlsx_path": enriched_saved["xlsx_path"],
         "enriched_latest_csv": enriched_saved["latest_csv"],
         "enriched_latest_xlsx": enriched_saved["latest_xlsx"],
+        "enriched_xlsx_sanitization": enriched_saved.get("xlsx_sanitization", {}),
         "unmatched_csv_path": unmatched_saved["csv_path"],
         "unmatched_xlsx_path": unmatched_saved["xlsx_path"],
         "unmatched_latest_csv": unmatched_saved["latest_csv"],
         "unmatched_latest_xlsx": unmatched_saved["latest_xlsx"],
+        "unmatched_xlsx_sanitization": unmatched_saved.get("xlsx_sanitization", {}),
     }
 
 

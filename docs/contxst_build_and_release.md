@@ -69,11 +69,18 @@ python build.py --gui --cli
 `Declutter.py` can clear:
 - `build/`
 - `dist/`
+- `htmlcov/`
 - `turnpoint_purger.egg-info`
-- all `__pycache__` directories
-- all `.DS_Store` files
+- cache directories (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.hypothesis/`, `.nox/`, `.tox/`, `.ipynb_checkpoints/`)
+- metadata/cache files (`.DS_Store`, `Thumbs.db`, `.coverage*`, `*.pyc`, `*.pyo`)
+- common temp files (`*.tmp`, `*.temp`, `*.bak`, `*.orig`, `*.rej`, `*.swp`, `*.swo`, `*~`)
 
 Dry run:
 ```bash
 python Declutter.py --dry-run
+```
+
+Skip generic temp files:
+```bash
+python Declutter.py --skip-temp-files
 ```

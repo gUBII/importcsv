@@ -69,6 +69,6 @@ Outputs now land inside platform-specific folders (`dist/macos`, `dist/windows`,
 1. Edit any source file (e.g., tweak the UI, extend the scraper, etc.).
 2. Bump the version in `pyproject.toml` if you plan to publish new wheels.
 3. Re-run `python -m build` or the `pyinstaller ...` commands (or `python build.py ...`).
-4. Optionally clean previous artifacts with `rm -rf build dist __pycache__` before rebuilding.
+4. Optionally clean previous artifacts with `python Declutter.py` (or `python Declutter.py --dry-run` first).
 
 Because installers/executables are just snapshots, you can iterate freely: the source code remains editable, and rebuilds automatically pick up the latest changes.
