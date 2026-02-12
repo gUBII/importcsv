@@ -76,6 +76,22 @@ def cleanup_logs_dir() -> Path:
     return _cat("_cleanup_logs")
 
 
+def variants_latest_dir() -> Path:
+    return _cat("variants", "latest")
+
+
+def variants_snapshots_dir() -> Path:
+    return _cat("variants", "snapshots")
+
+
+def variants_diagnostics_dir() -> Path:
+    return _cat("variants", "diagnostics")
+
+
+def variants_checkpoints_dir() -> Path:
+    return _cat("variants", "checkpoints")
+
+
 # ---------------------------------------------------------------------------
 # Ensure directory structure
 # ---------------------------------------------------------------------------
@@ -91,6 +107,10 @@ _ALL_DIRS = (
     exports_manual_dir,
     downloads_dir,
     cleanup_logs_dir,
+    variants_latest_dir,
+    variants_snapshots_dir,
+    variants_diagnostics_dir,
+    variants_checkpoints_dir,
 )
 
 
@@ -171,6 +191,26 @@ def get_export_path(run_id: str, fmt: str = "csv") -> Path:
     if ext not in ("csv", "xlsx"):
         ext = "csv"
     return exports_manual_dir() / f"TruthView_export_{run_id}.{ext}"
+
+
+# --- variants ---
+
+def get_variant_paths(run_id: str) -> dict[str, Path]:
+    """Return dict with snapshot + latest + diagnostics + checkpoint paths for variant extraction."""
+    snap = variants_snapshots_dir()
+    lat = variants_latest_dir()
+    diag = variants_diagnostics_dir()
+    chk = variants_checkpoints_dir()
+    return {
+        "snapshot_csv": snap / f"ServiceTypeVariants_{run_id}.csv",
+        "snapshot_xlsx": snap / f"ServiceTypeVariants_{run_id}.xlsx",
+        "latest_csv": lat / "ServiceTypeVariants_latest.csv",
+        "latest_xlsx": lat / "ServiceTypeVariants_latest.xlsx",
+        "conflicts_csv": snap / f"ServiceTypeVariants_conflicts_{run_id}.csv",
+        "diagnostics_dir": diag / run_id,
+        "checkpoint_json": chk / f"checkpoint_{run_id}.json",
+        "checkpoint_append_csv": chk / f"variants_append_{run_id}.csv",
+    }
 
 
 # --- truth root (convenience) ---
