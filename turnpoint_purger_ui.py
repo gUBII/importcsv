@@ -49,6 +49,7 @@ from service_type_rate_extractor import (
     normalize_external_row,
 )
 from appointment_item_discovery import (
+    extract_service_type_variants,
     discover_appointment_item_numbers,
     load_discovery_latest,
     run_service_type_merge,
@@ -3160,36 +3161,31 @@ class TurnpointPurgerUI(tk.Tk):
 
         def task():
             try:
-                result = discover_appointment_item_numbers(
+                result = extract_service_type_variants(
                     headless=self.discovery_headless_var.get(),
-                    probe_client_id=probe_client_id,
+                    probe_client_ids=probe_client_id,
                     on_progress=on_progress,
                     on_event=on_event,
                     on_row=on_row,
-                    discovery_debug=self.discovery_debug_var.get(),
+                    resume=True,
+                    force_refresh=False,
                 )
-                rows = list(result.get("rows", []) or [])
                 self.discovery_last_result = dict(result)
-                self.discovery_last_diagnostics_folder = str(
-                    result.get("diagnostics_folder", "") or ""
-                )
-                output_root_text = str(result.get("output_root", "") or "").strip()
-                if output_root_text:
-                    self.discovery_last_output_root = str(Path(output_root_text).expanduser())
-                else:
-                    output_root = Path(
-                        str(result.get("discovery_latest_csv", "") or "")
-                    ).expanduser().parent
-                    self.discovery_last_output_root = str(output_root)
+                output_paths = dict(result.get("output_paths", {}))
+                self.discovery_last_diagnostics_folder = str(output_paths.get("diagnostics_dir", ""))
+                self.discovery_last_output_root = str(Path(output_paths.get("latest_xlsx", "")).parent)
 
+                total_rows = result.get("total_variant_rows", 0)
                 summary = (
-                    f"Appointment discovery complete: {result.get('row_count', 0)} row(s).\n"
+                    f"Service Type variant extraction complete: {total_rows} variant row(s).\n"
+                    f"Service Types processed: {result.get('processed_service_types', 0)}/{result.get('total_service_types', 0)}\n"
+                    f"Clean variants: {result.get('clean_variants', 0)} | Conflicts: {result.get('conflict_variants', 0)}\n"
                     f"Diagnostics: {self.discovery_last_diagnostics_folder}\n"
-                    f"CSV: {result.get('discovery_latest_csv', '')}\n"
-                    f"XLSX: {result.get('discovery_latest_xlsx', '')}"
+                    f"CSV: {output_paths.get('latest_csv', '')}\n"
+                    f"XLSX: {output_paths.get('latest_xlsx', '')}"
                 )
                 self._enqueue_log(
-                    self._timestamp(f"[AppointmentDiscovery] {summary}")
+                    self._timestamp(f"[ServiceTypeVariants] {summary}")
                 )
                 self.after(0, lambda: self.rate_status_var.set(summary))
                 self.after(
@@ -3203,19 +3199,19 @@ class TurnpointPurgerUI(tk.Tk):
                     ),
                 )
             except Exception as exc:
-                error = f"Appointment discovery failed: {exc}"
-                self._enqueue_log(self._timestamp(f"[AppointmentDiscovery] {error}"))
+                error = f"Service Type variant extraction failed: {exc}"
+                self._enqueue_log(self._timestamp(f"[ServiceTypeVariants] {error}"))
                 self.after(
                     0,
                     lambda: self.rate_status_var.set(
-                        "Appointment discovery failed. Inspect logs for details."
+                        "Service Type variant extraction failed. Inspect logs for details."
                     ),
                 )
                 self.after(
                     0,
                     lambda err=str(exc): messagebox.showerror(
                         "ServiceType → Rate Extractor",
-                        f"Appointment discovery failed:\n{err}",
+                        f"Service Type variant extraction failed:\n{err}",
                     ),
                 )
             finally:
