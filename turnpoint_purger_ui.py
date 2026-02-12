@@ -3320,7 +3320,7 @@ class TurnpointPurgerUI(tk.Tk):
             return
         if not self.rate_pending_refresh:
             self.rate_pending_refresh = True
-            self.rate_refresh_job_id = self.after(150, self._refresh_truth_grid)
+            self.rate_refresh_job_id = self.after(50, self._refresh_truth_grid)
 
     def _refresh_truth_grid(self):
         """Refresh the truth grid from the truth store."""
@@ -3693,76 +3693,75 @@ class TurnpointPurgerUI(tk.Tk):
         self._open_in_file_manager(path.parent)
 
     def _handle_clean_rate_clutter(self):
-        """Clean up old snapshots, keep latest + last 20."""
+        """Clean everything - full ServiceTypeTruth wipe for fresh start."""
         if self.rate_running or self.discovery_running:
             messagebox.showwarning("ServiceType → Rate Extractor", "Cannot clean while tasks are running.")
             return
 
-        run_id = line_item_paths.make_run_id("CLEANUP")
-        log_path = line_item_paths.cleanup_logs_dir() / f"cleanup_{run_id}.txt"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        deleted_files = []
-        kept_files = []
-        bytes_reclaimed = 0
-
-        with log_path.open("w", encoding="utf-8") as log:
-            log.write(f"Cleanup run: {run_id}\n")
-            log.write(f"Retention: keep latest + last 20 snapshots\n\n")
-
-            # Clean each snapshot category
-            for snap_dir in [
-                line_item_paths.reference_snapshots_dir(),
-                line_item_paths.discovery_snapshots_dir(),
-                line_item_paths.enriched_snapshots_dir(),
-            ]:
-                if not snap_dir.exists():
-                    continue
-
-                files = sorted(snap_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-                files = [f for f in files if f.is_file()]
-
-                keep = files[:20]
-                delete = files[20:]
-
-                for f in keep:
-                    kept_files.append(str(f))
-                    log.write(f"KEEP: {f}\n")
-
-                for f in delete:
-                    size = f.stat().st_size
-                    f.unlink()
-                    deleted_files.append(str(f))
-                    bytes_reclaimed += size
-                    log.write(f"DELETE: {f} ({size} bytes)\n")
-
-            # Clean downloads
-            dl_dir = line_item_paths.downloads_dir()
-            if dl_dir.exists():
-                files = sorted(dl_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-                files = [f for f in files if f.is_file()]
-                delete = files[20:]
-                for f in delete:
-                    size = f.stat().st_size
-                    f.unlink()
-                    deleted_files.append(str(f))
-                    bytes_reclaimed += size
-                    log.write(f"DELETE (downloads): {f} ({size} bytes)\n")
-
-            log.write(f"\nSummary:\n")
-            log.write(f"  Deleted: {len(deleted_files)} files\n")
-            log.write(f"  Reclaimed: {bytes_reclaimed} bytes ({bytes_reclaimed / 1024 / 1024:.2f} MB)\n")
-            log.write(f"  Kept: {len(kept_files)} files\n")
-
-        summary = (
-            f"Cleanup complete:\n\n"
-            f"Deleted: {len(deleted_files)} files\n"
-            f"Reclaimed: {bytes_reclaimed / 1024 / 1024:.2f} MB\n"
-            f"Kept: {len(kept_files)} files\n\n"
-            f"Log: {log_path}"
+        # Confirm before wiping
+        confirm = messagebox.askyesno(
+            "Clean Rate Clutter - Fresh Start",
+            "This will DELETE EVERYTHING in ServiceTypeTruth and clear all color coding.\n\n"
+            "You will start completely fresh. Continue?"
         )
-        self._enqueue_log(self._timestamp(f"[Cleanup] {summary}"))
-        messagebox.showinfo("Clean Rate Clutter", summary)
+        if not confirm:
+            return
+
+        try:
+            import shutil
+
+            truth_root = line_item_paths.get_truth_root()
+            run_id = line_item_paths.make_run_id("FRESH_START")
+            log_dir = line_item_paths.cleanup_logs_dir()
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"cleanup_{run_id}.txt"
+
+            deleted_count = 0
+            bytes_reclaimed = 0
+
+            with log_path.open("w", encoding="utf-8") as log:
+                log.write(f"Fresh Start Cleanup: {run_id}\n")
+                log.write(f"Action: Full wipe of {truth_root}\n\n")
+
+                # Count files before deletion
+                if truth_root.exists():
+                    for item in truth_root.rglob("*"):
+                        if item.is_file():
+                            deleted_count += 1
+                            bytes_reclaimed += item.stat().st_size
+
+                # Delete the entire tree
+                if truth_root.exists():
+                    shutil.rmtree(truth_root)
+                    log.write(f"Deleted: {truth_root}\n")
+
+                # Recreate empty directory structure
+                line_item_paths.ensure_structure()
+                log.write(f"Recreated: empty directory structure\n")
+
+                log.write(f"\nSummary:\n")
+                log.write(f"  Deleted: {deleted_count} files\n")
+                log.write(f"  Reclaimed: {bytes_reclaimed} bytes ({bytes_reclaimed / 1024 / 1024:.2f} MB)\n")
+                log.write(f"  Status: Fresh start ready\n")
+
+            # Clear UI state
+            self.truth_store.clear()
+            self._refresh_truth_grid()
+
+            summary = (
+                f"Fresh Start Complete:\n\n"
+                f"Deleted: {deleted_count} files\n"
+                f"Reclaimed: {bytes_reclaimed / 1024 / 1024:.2f} MB\n\n"
+                f"Ready for new capture/discovery.\n"
+                f"Log: {log_path}"
+            )
+            self._enqueue_log(self._timestamp(f"[Cleanup] {summary}"))
+            messagebox.showinfo("Clean Rate Clutter - Fresh Start", summary)
+
+        except Exception as exc:
+            error = f"Clean Rate Clutter failed: {exc}"
+            self._enqueue_log(self._timestamp(f"[Cleanup] {error}"))
+            messagebox.showerror("Clean Rate Clutter Error", error)
 
     # -----------------------------------------------------------------------
     # Original rate extractor handlers (updated for truth store)
