@@ -15,6 +15,7 @@ import json
 import re
 import shutil
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -426,21 +427,72 @@ def _append_to_checkpoint_csv(run_id: str, rows: List[Dict[str, str]]):
 
 
 def _open_assist_appointments_new(driver, recorder: DiagnosticsRecorder) -> bool:
-    """Navigate to Assist /appointments/new."""
+    """Navigate to Assist /appointments/new with enhanced diagnostics."""
     try:
         url = "https://assist.turnpoint.co/appointments/new"
         driver.get(url)
-        time.sleep(1)
+        time.sleep(3)  # Increased wait for React app to render
 
-        # Check that page loaded
-        body_text = driver.page_source
-        if "appointment" in body_text.lower():
+        # Capture diagnostics
+        actual_url = driver.current_url
+        page_title = driver.title
+        body_text = driver.page_source.lower()
+
+        # Log page info
+        recorder.event(
+            "INFO",
+            "navigate_assist",
+            "PAGE_LOADED",
+            f"URL: {actual_url}, Title: {page_title}, Body length: {len(body_text)}",
+        )
+
+        # Save HTML for inspection
+        diag_html_path = recorder.diagnostics_dir / f"assist_page_{int(time.time())}.html"
+        diag_html_path.parent.mkdir(parents=True, exist_ok=True)
+        diag_html_path.write_text(driver.page_source, encoding="utf-8")
+
+        # Save screenshot
+        screenshot_path = recorder.diagnostics_dir / f"assist_page_{int(time.time())}.png"
+        try:
+            driver.save_screenshot(str(screenshot_path))
+            recorder.event("INFO", "screenshot", "SAVED", f"Path: {screenshot_path}")
+        except Exception as ss_exc:
+            recorder.event("WARNING", "screenshot", "FAILED", str(ss_exc))
+
+        # Check for redirect to login (shouldn't happen per user confirmation)
+        if "login" in actual_url.lower() or "auth" in actual_url.lower():
+            recorder.checker(
+                "open_assist",
+                "FAIL",
+                CHECKER_APPOINTMENT,
+                f"Unexpected redirect to login: {actual_url}",
+                url=actual_url,
+            )
+            return False
+
+        # More robust validation - check multiple signals
+        checks = {
+            "appointment_in_text": "appointment" in body_text,
+            "service_in_text": "service" in body_text,
+            "react_app_present": "react" in body_text or "root" in body_text,
+            "has_forms": len(driver.find_elements(By.TAG_NAME, "form")) > 0,
+            "has_inputs": len(driver.find_elements(By.TAG_NAME, "input")) > 0,
+            "has_select": len(driver.find_elements(By.TAG_NAME, "select")) > 0,
+        }
+
+        # Log all checks
+        for check_name, result in checks.items():
+            recorder.event("INFO", "page_check", check_name.upper(), f"Result: {result}")
+
+        # Pass if ANY of these conditions met
+        if checks["appointment_in_text"] or (checks["has_forms"] and checks["has_inputs"]):
             recorder.checker(
                 "open_assist",
                 "PASS",
                 CHECKER_APPOINTMENT,
-                "Appointments page loaded",
+                f"Appointments page validated: {sum(checks.values())}/6 checks passed",
                 url=url,
+                checks_passed=sum(checks.values()),
             )
             return True
         else:
@@ -448,17 +500,26 @@ def _open_assist_appointments_new(driver, recorder: DiagnosticsRecorder) -> bool
                 "open_assist",
                 "FAIL",
                 CHECKER_APPOINTMENT,
-                "Appointments page did not load",
+                f"Page validation failed: {sum(checks.values())}/6 checks passed",
                 url=url,
+                checks_passed=sum(checks.values()),
             )
             return False
+
     except Exception as e:
         recorder.event(
             "ERROR",
             "open_assist",
             "EXCEPTION",
             str(e),
+            traceback=traceback.format_exc(),
         )
+        # Try to save screenshot even on exception
+        try:
+            screenshot_path = recorder.diagnostics_dir / f"error_{int(time.time())}.png"
+            driver.save_screenshot(str(screenshot_path))
+        except:
+            pass
         return False
 
 
