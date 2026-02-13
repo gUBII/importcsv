@@ -865,7 +865,9 @@ def extract_service_type_variants(
     try:
         # Ensure Chrome driver
         ensure_credentials()
-        driver = build_chrome_driver(headless=headless)
+        line_item_paths.ensure_structure()
+        download_dir = line_item_paths.downloads_dir()
+        driver = build_chrome_driver(headless=headless, download_dir=download_dir)
         login(driver)
 
         # Navigate to Assist
