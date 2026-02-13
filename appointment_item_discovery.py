@@ -1052,12 +1052,12 @@ def extract_service_type_variants(
 
 
 # =============================================================================
-# LEGACY FUNCTION: load_discovery_latest (for backward compatibility)
+# LEGACY STUBS (backward compatibility for UI imports)
 # =============================================================================
 
 
 def load_discovery_latest(path: Path = None) -> List[Dict[str, str]]:
-    """Load latest discovery data (legacy function)."""
+    """Load latest variant data. Legacy name kept for backward compatibility."""
     if path is None:
         paths = line_item_paths.get_variant_paths(
             line_item_paths.make_run_id("LEGACY")
@@ -1075,3 +1075,59 @@ def load_discovery_latest(path: Path = None) -> List[Dict[str, str]]:
         return rows
     except Exception:
         return []
+
+
+def discover_appointment_item_numbers(**kwargs) -> Dict[str, object]:
+    """Legacy stub — redirects to extract_service_type_variants().
+
+    Translates old parameter names to new ones so existing UI code
+    continues to work without modification.
+    """
+    # Map old parameter names to new ones
+    new_kwargs = {}
+    new_kwargs["headless"] = kwargs.get("headless", True)
+
+    probe = kwargs.get("probe_client_id") or kwargs.get("probe_client_ids")
+    if probe:
+        new_kwargs["probe_client_ids"] = probe
+    else:
+        new_kwargs["probe_client_ids"] = []
+
+    new_kwargs["on_progress"] = kwargs.get("on_progress")
+    new_kwargs["on_event"] = kwargs.get("on_event")
+    new_kwargs["on_row"] = kwargs.get("on_row")
+    new_kwargs["resume"] = kwargs.get("resume", True)
+    new_kwargs["force_refresh"] = kwargs.get("force_refresh", False)
+
+    result = extract_service_type_variants(**new_kwargs)
+
+    # Map new result keys to old ones for backward compatibility
+    output_paths = result.get("output_paths", {})
+    result["row_count"] = result.get("total_variant_rows", 0)
+    result["rows"] = []
+    result["diagnostics_folder"] = output_paths.get("diagnostics_dir", "")
+    result["discovery_latest_csv"] = output_paths.get("latest_csv", "")
+    result["discovery_latest_xlsx"] = output_paths.get("latest_xlsx", "")
+    result["output_root"] = str(Path(output_paths.get("latest_csv", "")).parent) if output_paths.get("latest_csv") else ""
+
+    return result
+
+
+def run_service_type_merge(discovered_rows: List[Dict[str, str]], **kwargs) -> Dict[str, object]:
+    """Legacy stub — merge is no longer needed.
+
+    The new variant extractor already produces complete Rate+Code data
+    directly from the Assist table. This stub returns an empty result
+    to keep the UI merge button from crashing.
+    """
+    progress = kwargs.get("progress")
+    if progress:
+        progress("Merge is no longer needed — variant extraction already includes Rate+Code per variant.")
+
+    return {
+        "enriched_count": 0,
+        "unmatched_count": 0,
+        "enriched_rows": [],
+        "enriched_latest_csv": "",
+        "unmatched_latest_csv": "",
+    }
