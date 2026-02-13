@@ -492,7 +492,6 @@ def _open_assist_appointments_new(driver, recorder: DiagnosticsRecorder) -> bool
                 CHECKER_APPOINTMENT,
                 f"Appointments page validated: {sum(checks.values())}/6 checks passed",
                 url=url,
-                checks_passed=sum(checks.values()),
             )
             return True
         else:
@@ -502,21 +501,21 @@ def _open_assist_appointments_new(driver, recorder: DiagnosticsRecorder) -> bool
                 CHECKER_APPOINTMENT,
                 f"Page validation failed: {sum(checks.values())}/6 checks passed",
                 url=url,
-                checks_passed=sum(checks.values()),
             )
             return False
 
     except Exception as e:
+        tb_str = traceback.format_exc()
         recorder.event(
             "ERROR",
             "open_assist",
             "EXCEPTION",
-            str(e),
-            traceback=traceback.format_exc(),
+            f"{e}\n{tb_str}",
         )
         # Try to save screenshot even on exception
         try:
             screenshot_path = recorder.diagnostics_dir / f"error_{int(time.time())}.png"
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
             driver.save_screenshot(str(screenshot_path))
         except:
             pass
