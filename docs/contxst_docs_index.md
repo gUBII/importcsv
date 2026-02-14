@@ -8,7 +8,7 @@ This set reflects the implemented code as of today, including:
 - Client and worker purge pipelines.
 - PDCC purgeable/bundle/manifest workflows.
 - Service Type reference extraction (`service_type_rate_extractor.py`).
-- Appointment-driven item-number discovery + service-type enrichment (`appointment_item_discovery.py`).
+- Service Type variants truth extraction from Assist appointment editor (`appointment_item_discovery.py`).
 - CLI and build/distribution behavior.
 
 ## Reading order
@@ -26,11 +26,11 @@ This set reflects the implemented code as of today, including:
 - GUI entrypoint: `turnpoint_purger_ui.py` (`turnpoint-purger-gui`).
 - New discovery module: `appointment_item_discovery.py`.
 - Variants extraction runbook: `docs/service_type_variants_runbook.md`.
-- Core archives: `~/PurgedClients`, `~/PurgedWorker`, and PDCC root.
-- New diagnostics for item discovery:
-  - `ServiceTypeRateExtractor/diagnostics/<run_id>/events.jsonl`
-  - `ServiceTypeRateExtractor/diagnostics/<run_id>/checkers.csv`
-  - `ServiceTypeRateExtractor/diagnostics/<run_id>/summary.json`
+- Core archives: `~/PurgedClients`, `~/PurgedWorker`, PDCC root, and `~/LineItemRates`.
+- Variant extraction diagnostics:
+  - `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/events.jsonl`
+  - `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/checkers.csv`
+  - HTML/PNG/console artifacts in the same run directory
 
 ## Legacy docs note
 These files still exist and are kept aligned at a high level:

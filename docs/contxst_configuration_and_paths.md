@@ -17,6 +17,7 @@
 - `PURGER_CONTACT_EMAIL`: Displayed in UI contact label.
 - `PURGED_ARCHIVE_ROOT`: Overrides client archive root (default `~/PurgedClients`).
 - `PURGED_WORKER_ROOT`: Overrides worker archive root (default `~/PurgedWorker`).
+- `LINE_ITEM_RATES_ROOT`: Overrides ServiceType truth root (default `~/LineItemRates`).
 
 ### Package-discovery and PDCC
 - `PDCC_ROOT`: Overrides package discovery and bundle root.
@@ -37,6 +38,19 @@
 ### Worker outputs
 - Root: `~/PurgedWorker` unless overridden.
 - Download cache: `~/PurgedWorker/_downloads`.
+
+### ServiceType truth outputs
+- Root: `~/LineItemRates/ServiceTypeTruth` unless overridden by `LINE_ITEM_RATES_ROOT`.
+- Variants latest:
+  - `variants/latest/ServiceTypeVariants_latest.csv`
+  - `variants/latest/ServiceTypeVariants_latest.xlsx`
+- Variants diagnostics:
+  - `variants/diagnostics/<run_id>/events.jsonl`
+  - `variants/diagnostics/<run_id>/checkers.csv`
+  - HTML/PNG/console artifacts in the same directory
+- Variants checkpoints:
+  - `variants/checkpoints/checkpoint_<run_id>.json`
+  - `variants/checkpoints/variants_append_<run_id>.csv`
 
 ### Persistent state
 - Client state: `~/.turnpoint_purger/purger_state.json`

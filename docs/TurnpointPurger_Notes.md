@@ -8,6 +8,7 @@ This document captures the end-to-end context so future engineers can onboard qu
 - **Data roots:**  
   - `PurgedClients/<NexisID CLIENT>` – per-client CSVs, documents, and budget exports.  
   - `~/Purged Client/Package Divided Client Credential (PDCC)` – global artefacts (latest purgeable Excel, per-package bundles, `package_manifest.csv`, `_downloads/`).  
+  - `~/LineItemRates/ServiceTypeTruth` – Service Type reference + variants truth outputs and diagnostics.  
   - `~/.turnpoint_purger/purger_state.json` – universal ID counter + duplicate tracking.
 
 ## 2. Build Pipeline (Windows Focus)
@@ -55,6 +56,8 @@ python importcsv.py --update-bundle
 python importcsv.py --bundle-package "HCP L1"
 python importcsv.py --purgeable-url "https://tp1.com.au/custom-path"
 python importcsv.py --manifest my_clients.csv --all-clients
+python importcsv.py --discover-item-numbers --probe-client-id 56851 --headless
+python importcsv.py --merge-service-types    # legacy no-op (kept for compatibility)
 ```
 All discovery commands accept `--headless`. Use `--purgeable-url` when the tenant-specific clients page differs from the default `fld264=True` URL.
 
@@ -63,6 +66,7 @@ All discovery commands accept `--headless`. Use `--purgeable-url` when the tenan
 - **Excel icon hidden:** ensure you’re on `clients.asp` not the dashboard; `_trigger_excel_download` looks for any `<a>` with `onclick='generateXL...'`.  
 - **Atlas stays blank:** run `Collect Package Manifest` (creates `package_manifest.csv`), then `Refresh Client Atlas`.  
 - **Bundle buttons unresponsive:** they are hidden until credentials are set. After setting, click `Bundle Download`, choose “All Packages” or a single package; watch the log panel for per-package outcomes.
+- **Service Type variants extraction fails early:** inspect `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/` for `events.jsonl`, `checkers.csv`, and HTML/PNG/console artifacts. Diagnostics are written even on early route/readiness failure.
 
 ## 7. UML Diagram
 The following PlantUML snippet summarises the main modules and interactions:

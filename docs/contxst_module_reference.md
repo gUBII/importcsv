@@ -37,40 +37,43 @@ This document maps each important module to its real responsibilities, major fun
 - Uses many global runtime variables for context (`CLIENT_ID`, `OUTPUT_DIR`, `FILE_PREFIX`, credentials).
 - Continues extraction on per-page failures (logs errors, does not immediately abort the full run).
 - Finalization and state updates occur after browser teardown.
+- `--merge-service-types` is currently a compatibility path; `run_service_type_merge(...)` is a no-op stub.
+- `--discovery-debug` is retained for compatibility and does not currently change extractor behavior.
 
-## `appointment_item_discovery.py` (appointment-driven discovery + enrichment)
+## `appointment_item_discovery.py` (Service Type variants truth extraction)
 
 ### What it owns
-- Assist-first appointment route discovery with legacy fallback.
-- Service-type option discovery from legacy `<select>` and Assist React comboboxes.
-- Structured diagnostics (`events.jsonl`, `checkers.csv`, `summary.json`) with screenshot/HTML artifacts.
-- Details-page enrichment from `service-type-details.asp?eid=<id>` for item number and rate.
-- Merge workflow with `ServiceTypes_latest.csv`.
+- Assist/TP1 appointment-editor opening with strict readiness checks.
+- Locator fallback layer for Service Type combobox, options list, and variants table.
+- Variant row extraction (`Service`, `Rate`, `Code`, `Unit`) with raw + normalized fields.
+- Continue-on-error per Service Type (`Status=FAIL` rows + artifacts, then continue).
+- Structured diagnostics (`events.jsonl`, `checkers.csv`) with HTML/PNG/console failure artifacts.
+- Checkpointing and resumable extraction under LineItemRates checkpoints.
 
 ### Core functions
-- Discovery pipeline:
+- Extraction pipeline:
   - `discover_appointment_item_numbers(...)`
   - `_open_assist_appointments_new(...)`
-  - `_inspect_assist_service_options(...)`
-  - `_inspect_dropdown(...)` (legacy path)
-- Enrichment:
-  - `_fetch_service_type_details(...)`
-  - `_dedupe_discovery_rows(...)`
-  - `count_item_number_coverage(...)`
-- Merge/export:
-  - `merge_discovery_with_service_types(...)`
+  - `_locate_service_type_combobox(...)`
+  - `_select_assist_option_with_retries(...)`
+  - `_extract_variant_table_rows(...)`
+  - `_load_service_types_from_reference_index(...)`
+  - `extract_service_type_variants(...)`
+- Legacy compatibility:
   - `run_service_type_merge(...)`
   - `load_discovery_latest(...)`
 
 ### Output contract
-- Discovery:
-  - `AppointmentItemDiscovery_latest.csv`
-  - `AppointmentItemDiscovery_latest.xlsx`
-- Merge:
-  - `ServiceTypes_enriched_latest.csv/.xlsx`
-  - `ServiceTypes_unmatched_discovery_latest.csv/.xlsx`
+- Variants:
+  - `~/LineItemRates/ServiceTypeTruth/variants/latest/ServiceTypeVariants_latest.csv`
+  - `~/LineItemRates/ServiceTypeTruth/variants/latest/ServiceTypeVariants_latest.xlsx`
+  - `~/LineItemRates/ServiceTypeTruth/variants/snapshots/ServiceTypeVariants_<run_id>.csv/.xlsx`
+  - Optional conflicts file: `ServiceTypeVariants_conflicts_<run_id>.csv`
+- Checkpoints:
+  - `~/LineItemRates/ServiceTypeTruth/variants/checkpoints/checkpoint_<run_id>.json`
+  - `~/LineItemRates/ServiceTypeTruth/variants/checkpoints/variants_append_<run_id>.csv`
 - Diagnostics per run under:
-  - `~/PurgedClients/ServiceTypeRateExtractor/diagnostics/<run_id>/`
+  - `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/`
 
 ## `turnpoint_purger_ui.py` (Tkinter app)
 
@@ -210,4 +213,4 @@ Per worker archive typically contains:
 - `tests/test_package_collector.py`
 - `tests/test_purgeable_helpers.py`
 
-These tests focus on pure helper behavior and avoid browser automation integration.
+These tests focus on helper behavior and schema/diagnostic contracts; browser automation remains manual/smoke validated.

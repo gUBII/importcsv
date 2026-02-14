@@ -12,6 +12,7 @@ TurnpointPurger is a Python automation toolkit that logs into the TurnPoint port
 | Module | Role | Notes |
 | --- | --- | --- |
 | `importcsv.py` | Core automation pipeline. | Manages state, Selenium driver creation, navigation, scraping, downloads, CSV writing, and archival. |
+| `appointment_item_discovery.py` | Service Type variants extractor. | Opens Assist appointment editor, extracts variant Service/Rate/Code/Unit rows, writes diagnostics/checkpoints, and outputs CSV/XLSX truth files under `LineItemRates`. |
 | `turnpoint_purger_ui.py` | Tkinter desktop UI. | Drives the pipeline, displays status, collects credentials, and exposes reset/history functions. |
 | `NDISBUDGETER.py` | Budget helper. | Pandas-based parser that converts TurnPoint Excel budgets into entry CSVs. |
 | `purger_state.py` | Persistence layer. | Thread-safe JSON storage for purge counters, history, duplicates. |
@@ -53,6 +54,27 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 - `driver.switch_to.window`
 - `WebDriverWait(...).until(EC.*)` for login page, anchor elements, clickable download buttons.
 - Polling of the download directory to skip `.crdownload` artifacts.
+
+### `appointment_item_discovery.py`
+- Primary purpose: resilient Service Type variant truth extraction for Assist appointment editor pages.
+- Assist open sequence:
+  - TP1 bridge editor URL (`appointment-edit.asp?...&cid=<probe_id>`)
+  - direct Assist URL (`assist.turnpoint.co/appointments/new`)
+  - client appointments + `Add Appointment` fallback
+- Readiness gate: extraction starts only when Service Type combobox is present and interactable.
+- Locator strategy: multiple fallbacks per critical element (combobox, option list, variants table) with strategy-hit logging.
+- Per-Service-Type behavior:
+  - select Service Type with fallback interaction strategies
+  - wait for variants rows to stabilize
+  - map `Service Variant Label`, `Rate`, `Code`, `Unit` with raw + normalized fields
+  - on failure, emit `Status=FAIL` + `Error Reason`, capture artifacts, continue to next Service Type
+- Outputs:
+  - `~/LineItemRates/ServiceTypeTruth/variants/latest/ServiceTypeVariants_latest.csv`
+  - `~/LineItemRates/ServiceTypeTruth/variants/latest/ServiceTypeVariants_latest.xlsx`
+  - snapshot files per run under `variants/snapshots/`
+  - diagnostics per run under `variants/diagnostics/<run_id>/` (`events.jsonl`, `checkers.csv`, HTML/PNG/console artifacts)
+  - checkpoints under `variants/checkpoints/`
+- Safety: recorder persistence is in `finally`, so diagnostics/checkers remain available even on early abort.
 
 ### `turnpoint_purger_ui.py`
 - Subclasses `tk.Tk`; defines styles, frames, neon progress bars, GIF animation.
@@ -112,6 +134,10 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 - Final folder renamed to include client names (`<NexisID CLIENT NAME (ID)>`); fallback copytree handles cross-device/permission issues.
 - Package exports: `Purged Client/Package Divided Client Credential (PDCC)/` houses the purgeable workbook (`latest_purgeable_clients.xlsx`) plus per-package folders with `<Package Name>_clients.xlsx` + `.csv`.
 - Package manifest: `PDCC/package_manifest.csv` lists every discovered client (`order, package, client id, client name, details url`) collected via the new package crawler.
+- ServiceType truth root: `~/LineItemRates/ServiceTypeTruth/` (override with `LINE_ITEM_RATES_ROOT`), including:
+  - `variants/latest/` + `variants/snapshots/`
+  - `variants/diagnostics/<run_id>/`
+  - `variants/checkpoints/`
 - UML overview (PlantUML):
 
 ```plantuml

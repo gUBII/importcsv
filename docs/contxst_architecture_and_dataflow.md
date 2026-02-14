@@ -84,37 +84,49 @@ flowchart TD
 - De-duplicate client IDs across packages.
 - Persist `package_manifest.csv` with deterministic row order.
 
-## Appointment discovery dataflow (`appointment_item_discovery.py`)
+## Service Type variants dataflow (`appointment_item_discovery.py`)
 
-### Route resolution
-- Login using shared `importcsv.py` auth helpers.
-- Attempt Assist bridge route first:
-  - `https://tp1.com.au/appointments-all.asp`
-  - redirect into `https://assist.turnpoint.co/appointments`
-  - navigate to `https://assist.turnpoint.co/appointments/new`
-- If Assist route is unavailable or stalls at auth/login, fallback to legacy appointment URLs.
+### Assist entry and readiness
+- Login uses shared `importcsv.py` auth helpers.
+- Attempt appointment editor routes in order:
+  - `tp1` bridge URL (`appointment-edit.asp?...&cid=<probe_client_id>`)
+  - direct Assist URL (`https://assist.turnpoint.co/appointments/new`)
+  - client appointments page + `Add Appointment` click fallback
+- Readiness is PASS only when a Service Type combobox is present and interactable.
+- If route/open/readiness fails, capture URL/title/body snippet metadata plus HTML/PNG/console artifacts.
 
-### Assist extraction path
-- Verify page readiness (`Appointment Details - New`).
-- Probe `client_id` and `service_type_id` React comboboxes with checker instrumentation.
-- Treat empty option sets as warn+continue (`CHK_DROPDOWN_EMPTY`) and capture artifacts.
-- Extract option rows as `{label, value}` where `value` is used as `Service Type ID`.
+### Locator layer
+- Service Type combobox uses multi-strategy fallbacks:
+  - `data-testid` selectors
+  - `name` selectors
+  - `aria-label` selectors
+  - `role="combobox"` + ARIA selectors
+  - label-adjacent XPath fallback
+- Variant table and option list use fallback stacks as well.
+- Strategy hits are recorded in diagnostics for postmortem analysis.
 
-### Item-number enrichment path
-- For each discovered `Service Type ID`, open `service-type-details.asp?eid=<id>`.
-- Parse:
-  - `ef581` -> item number / service code
-  - `ef592` -> default rate
-- Cache per-`eid` lookups to avoid repeated page fetches.
+### Per-Service-Type extraction loop
+- Service Type universe is loaded from reference export first (`ServiceTypes_latest.csv/.xlsx`), then combobox options as fallback.
+- For each Service Type:
+  - select using retries (`click option`, `reload then click`, `type + enter`)
+  - wait for variants table row count to stabilize
+  - map table cells as `Service Variant Label`, `Rate`, `Code`, `Unit`
+  - write raw and normalized `Rate` + `Code` fields
+- Continue-on-error is enforced:
+  - write a `Status=FAIL` row with `Error Reason`
+  - capture artifacts
+  - continue to next Service Type instead of aborting run.
 
-### Merge path
-- Merge discovery output with `ServiceTypes_latest.csv`.
-- Match precedence:
-  - exact `Service Variant Label` to `Service Type`
-  - fallback by `Service Type ID` to `ID`
-- Rate precedence:
-  - discovery payload/details-derived rate first
-  - fallback to reference `Def. Rate`
+### Output and checkpoint path
+- Output root: `~/LineItemRates/ServiceTypeTruth/variants/`
+- Files:
+  - `latest/ServiceTypeVariants_latest.csv/.xlsx`
+  - `snapshots/ServiceTypeVariants_<run_id>.csv/.xlsx`
+  - `snapshots/ServiceTypeVariants_conflicts_<run_id>.csv` (if conflicts detected)
+- Checkpoints:
+  - `checkpoints/checkpoint_<run_id>.json`
+  - `checkpoints/variants_append_<run_id>.csv`
+- XLSX merges parent columns (A/B) across contiguous variant rows.
 
 ## Worker pipeline dataflow (`worker_purger.py`)
 
@@ -162,10 +174,10 @@ flowchart TD
 ### Logging
 - `importcsv.log_message` is the shared logger.
 - UI injects a log sink callback to stream live output into the text area.
-- Appointment discovery additionally writes structured diagnostics per run:
+- Service Type variant extraction additionally writes structured diagnostics per run:
   - `events.jsonl` (event schema with code/step/context)
   - `checkers.csv` (pass/fail/warn checkpoints)
-  - `summary.json` (aggregate counters and output paths)
+  - HTML/PNG/console artifacts for route/readiness/select/extract failures
 
 ### State and idempotency
 - Client duplicates are explicit and can be overridden.

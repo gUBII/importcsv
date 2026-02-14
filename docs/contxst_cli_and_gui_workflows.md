@@ -46,25 +46,31 @@ Optional:
 - `--package "NDIS - Plan Managed"` (repeatable / comma-separated)
 - `--manifest <output_manifest_path>`
 
-### Appointment item-number discovery (Assist + legacy fallback)
+### Service Type variants extraction (Assist appointment editor)
 ```bash
 python importcsv.py --discover-item-numbers --probe-client-id 56851 --headless
 ```
 Optional:
-- `--discovery-debug` for per-query/per-option debug events in diagnostics.
+- `--discovery-debug` (legacy compatibility flag; currently ignored by the extractor).
 
 Behavior notes:
 - `--probe-client-id` is required by CLI for discovery runs.
-- Assist route is attempted first; legacy URLs are used only as fallback.
-- Discovery diagnostics are written to:
-  - `~/PurgedClients/ServiceTypeRateExtractor/diagnostics/<run_id>/events.jsonl`
-  - `~/PurgedClients/ServiceTypeRateExtractor/diagnostics/<run_id>/checkers.csv`
-  - `~/PurgedClients/ServiceTypeRateExtractor/diagnostics/<run_id>/summary.json`
+- Assist/appointment-editor routes are attempted with strict readiness on Service Type combobox interactivity.
+- Extraction writes variant truth output to:
+  - `~/LineItemRates/ServiceTypeTruth/variants/latest/ServiceTypeVariants_latest.csv`
+  - `~/LineItemRates/ServiceTypeTruth/variants/latest/ServiceTypeVariants_latest.xlsx`
+- Diagnostics are written to:
+  - `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/events.jsonl`
+  - `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/checkers.csv`
+  - HTML/PNG/console artifacts in the same run directory.
+- Per-Service-Type failures do not stop the run; a `Status=FAIL` row with `Error Reason` is emitted and extraction continues.
 
-### Merge latest discovery with Service Types reference
+### Merge latest discovery with Service Types reference (legacy no-op)
 ```bash
 python importcsv.py --merge-service-types
 ```
+Behavior note:
+- This flag remains for backward compatibility; current `run_service_type_merge` returns an empty result because variant extraction already includes normalized Rate+Code fields.
 
 Combined run:
 ```bash
