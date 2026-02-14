@@ -5,9 +5,10 @@ The repository includes focused unit-style test modules:
 
 1. `tests/test_appointment_item_discovery.py`
 - Verifies checker transitions (success/missing/empty paths).
-- Verifies Assist route helper behavior and option parsing helpers.
+- Verifies TP1 nested-iframe route helper behavior and capability gating.
+- Verifies fixed six-pair variant extraction (`day/eve/night/saturday/sunday/ph`) and label fallbacks.
 - Verifies diagnostics contract behavior (including always writing `checkers.csv`).
-- Verifies variant schema columns (`Status`, `Error Reason`, normalized/raw fields).
+- Verifies variant schema columns (`Status`, `Error Reason`, normalized/raw fields, alias import fields).
 - Verifies compatibility wrapper forwarding (`discover_appointment_item_numbers` smoke kwargs).
 
 2. `tests/test_package_collector.py`
@@ -19,7 +20,7 @@ The repository includes focused unit-style test modules:
 - Verifies purgeable page 404 detection helper behavior.
 
 ## What is currently covered well
-- Service Type variant parsing, checker semantics, and output schema contracts.
+- Service Type variant parsing from stable `data-cy` inputs, checker semantics, and output schema contracts.
 - Pure helper logic with deterministic inputs.
 - CSV writer structure for package manifest.
 - Basic URL and error-checking helpers.
@@ -51,7 +52,8 @@ The repository includes focused unit-style test modules:
 
 ## Reliability characteristics from code review
 - Many flows recover from individual failures and continue processing.
-- Variant extraction workflow has structured diagnostics (`events.jsonl`, `checkers.csv`) plus per-failure HTML/PNG artifacts.
+- Variant extraction workflow has structured diagnostics (`events.jsonl`, `checkers.csv`) plus per-failure HTML/PNG/console artifacts.
+- Stale-value guard (fingerprint change) reduces risk of reading previous service-type values.
 - Other legacy flows still rely primarily on operator-oriented text logs.
 - Global mutable state can become fragile in concurrent or long multi-step sessions.
 - Duplicate handling is stronger in client flow than worker flow (which hard-skips duplicates).

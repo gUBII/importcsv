@@ -44,6 +44,9 @@
 - Variants latest:
   - `variants/latest/ServiceTypeVariants_latest.csv`
   - `variants/latest/ServiceTypeVariants_latest.xlsx`
+- Extraction route requirement:
+  - TP1 client details `Appointments` -> `Add Appointment` nested iframes (`appointment-edit.asp` outer + Assist inner iframe with `has_parent=true`)
+  - Direct Assist URL without parent/client context is unsupported for variants extraction
 - Variants diagnostics:
   - `variants/diagnostics/<run_id>/events.jsonl`
   - `variants/diagnostics/<run_id>/checkers.csv`
@@ -68,6 +71,12 @@
 - `worker_manifest.csv`
 - `latest_workers.xlsx`
 - Per-worker `WorkerDetail.csv`, `Qualification.csv`, `Allowance.csv`
+
+### ServiceType variants CSV/XLSX schema highlights
+- Parent fields: `Parent Service Type ID`, `Parent Service Type Label`
+- Alias fields for TruthView import: `Parent Service Type`, `Service Type ID`, `Item Number`
+- Variant fields: `Service Variant Label`, `Rate`, `Rate (Raw)`, `Code`, `Code (Raw)`, `Unit`
+- Operational fields: `Status`, `Error Reason`, `Conflict`, `Conflict Detail`, `Probe Client ID`, `Source URL`, `Captured At (UTC)`
 
 ### Nexis pipeline
 - `combined_workers_nexis.csv`

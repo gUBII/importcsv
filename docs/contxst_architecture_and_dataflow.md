@@ -88,30 +88,34 @@ flowchart TD
 
 ### Assist entry and readiness
 - Login uses shared `importcsv.py` auth helpers.
-- Attempt appointment editor routes in order:
-  - `tp1` bridge URL (`appointment-edit.asp?...&cid=<probe_client_id>`)
-  - direct Assist URL (`https://assist.turnpoint.co/appointments/new`)
-  - client appointments page + `Add Appointment` click fallback
-- Readiness is PASS only when a Service Type combobox is present and interactable.
-- If route/open/readiness fails, capture URL/title/body snippet metadata plus HTML/PNG/console artifacts.
+- Route is locked to TP1 client-details appointments page:
+  - `client-details.asp?eid=<probe_client_id>&BREAKDOWN_SHOW_APPTS=yes&wide1=yes`
+  - click `Add Appointment`
+  - switch outer iframe `iframe[src*='appointment-edit.asp']`
+  - switch inner iframe `iframe[src*='assist.turnpoint.co/appointments/new'][src*='has_parent=true']`
+- Direct Assist URL without `has_parent=true` + client context is treated as unsupported.
+- Capability PASS requires:
+  - reload anchor `div[data-cy='service_type_id-reload']`
+  - Service Type input via `//div[@data-cy='service_type_id-reload']/preceding::input[@role='combobox'][1]`
+  - sentinel select yields `day_rate-input` + `day_code-input`
+- If route/open/readiness fails, capture URL/title/body length metadata plus HTML/PNG/console artifacts.
 
 ### Locator layer
-- Service Type combobox uses multi-strategy fallbacks:
-  - `data-testid` selectors
-  - `name` selectors
-  - `aria-label` selectors
-  - `role="combobox"` + ARIA selectors
-  - label-adjacent XPath fallback
-- Variant table and option list use fallback stacks as well.
-- Strategy hits are recorded in diagnostics for postmortem analysis.
+- Service Type combobox primary locator is anchored to reload button:
+  - `//div[@data-cy='service_type_id-reload']/preceding::input[@role='combobox'][1]`
+- Option selection uses `div[role='listbox']` + `div[role='option']` visible text (type + Enter with exact-click fallback).
+- Variant extraction is based on fixed `data-cy` input pairs:
+  - `day/eve/night/saturday/sunday/ph` for both `*_rate-input` and `*_code-input`.
 
 ### Per-Service-Type extraction loop
 - Service Type universe is loaded from reference export first (`ServiceTypes_latest.csv/.xlsx`), then combobox options as fallback.
 - For each Service Type:
-  - select using retries (`click option`, `reload then click`, `type + enter`)
-  - wait for variants table row count to stabilize
-  - map table cells as `Service Variant Label`, `Rate`, `Code`, `Unit`
+  - compute current variant fingerprint, then select with retries (`type + enter`, exact option click fallback)
+  - wait until fingerprint changes (stale-read guard), then stabilize briefly
+  - read the six fixed rate/code pairs from input `value` attributes
+  - derive `Service Variant Label` from wrapper text before `$` with fallback map
   - write raw and normalized `Rate` + `Code` fields
+  - emit alias fields: `Parent Service Type`, `Service Type ID`, `Item Number`
 - Continue-on-error is enforced:
   - write a `Status=FAIL` row with `Error Reason`
   - capture artifacts

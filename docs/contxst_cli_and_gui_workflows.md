@@ -55,10 +55,18 @@ Optional:
 
 Behavior notes:
 - `--probe-client-id` is required by CLI for discovery runs.
-- Assist/appointment-editor routes are attempted with strict readiness on Service Type combobox interactivity.
+- Discovery route is locked to TP1 Add Appointment nested iframes:
+  - outer: `iframe[src*='appointment-edit.asp']`
+  - inner: `iframe[src*='assist.turnpoint.co/appointments/new'][src*='has_parent=true']`
+- Direct Assist URL without parent/client context is unsupported for variants extraction.
+- Success gate requires reload anchor + primary Service Type combobox XPath + sentinel-confirmed day pair inputs.
 - Extraction writes variant truth output to:
   - `~/LineItemRates/ServiceTypeTruth/variants/latest/ServiceTypeVariants_latest.csv`
   - `~/LineItemRates/ServiceTypeTruth/variants/latest/ServiceTypeVariants_latest.xlsx`
+- Rows include alias fields for TruthView merge/import compatibility:
+  - `Parent Service Type`
+  - `Service Type ID`
+  - `Item Number`
 - Diagnostics are written to:
   - `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/events.jsonl`
   - `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/checkers.csv`

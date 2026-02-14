@@ -31,11 +31,18 @@ This repository automates TurnPoint and Nexis operations with filesystem-first o
 - `--collect-packages`: crawls package filters and writes `package_manifest.csv`.
 
 ### 3) Service Type variant extraction (Assist)
-- Opens appointment editor via TP1 bridge/direct Assist routes and passes readiness only when the Service Type combobox is interactable.
-- Uses layered locator strategies for combobox, options, and variants table, and records which strategy matched.
+- Opens appointment editor only via TP1 client details -> `Appointments` -> `Add Appointment`, then switches nested iframes:
+  - outer iframe: `iframe[src*='appointment-edit.asp']`
+  - inner iframe: `iframe[src*='assist.turnpoint.co/appointments/new'][src*='has_parent=true']`
+- Direct Assist URL without parent/client context is treated as unsupported for variants extraction.
+- Applies a capability gate before extraction:
+  - `div[data-cy='service_type_id-reload']` exists
+  - `//div[@data-cy='service_type_id-reload']/preceding::input[@role='combobox'][1]` is interactable
+  - sentinel selection yields `day_rate-input` + `day_code-input`
 - For each Service Type:
-  - selects combobox option with fallback strategies
-  - waits for variants block to stabilize
+  - selects combobox option with deterministic retries (type + Enter, then exact option click)
+  - waits for stale-guard fingerprint change before reading values
+  - extracts fixed six variant pairs from `input[data-cy='{prefix}_rate-input']` and `input[data-cy='{prefix}_code-input']`
   - captures `Service Variant Label`, `Rate`, `Code`, and `Unit` with raw + normalized values
 - On per-Service-Type failures, writes a `Status=FAIL` row with `Error Reason`, captures artifacts, and continues to the next Service Type.
 
@@ -44,6 +51,11 @@ This repository automates TurnPoint and Nexis operations with filesystem-first o
   - `latest/ServiceTypeVariants_latest.csv`
   - `latest/ServiceTypeVariants_latest.xlsx`
   - `snapshots/ServiceTypeVariants_<run_id>.csv/.xlsx`
+- Rows include TruthView alias columns in addition to debug fields:
+  - `Parent Service Type`
+  - `Service Type ID`
+  - `Item Number`
+- Multi-probe conflicts are surfaced with `Conflict` + `Conflict Detail`.
 - XLSX parent columns (`Parent Service Type ID`, `Parent Service Type Label`) are merged across contiguous variant rows.
 - Diagnostics are written per run under:
   - `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/events.jsonl`

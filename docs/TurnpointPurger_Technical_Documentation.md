@@ -12,7 +12,7 @@ TurnpointPurger is a Python automation toolkit that logs into the TurnPoint port
 | Module | Role | Notes |
 | --- | --- | --- |
 | `importcsv.py` | Core automation pipeline. | Manages state, Selenium driver creation, navigation, scraping, downloads, CSV writing, and archival. |
-| `appointment_item_discovery.py` | Service Type variants extractor. | Opens Assist appointment editor, extracts variant Service/Rate/Code/Unit rows, writes diagnostics/checkpoints, and outputs CSV/XLSX truth files under `LineItemRates`. |
+| `appointment_item_discovery.py` | Service Type variants extractor. | Opens TP1 `Add Appointment` nested-iframes editor, extracts six variant Rate/Code pairs with aliases for TruthView import, writes diagnostics/checkpoints, and outputs CSV/XLSX truth files under `LineItemRates`. |
 | `turnpoint_purger_ui.py` | Tkinter desktop UI. | Drives the pipeline, displays status, collects credentials, and exposes reset/history functions. |
 | `NDISBUDGETER.py` | Budget helper. | Pandas-based parser that converts TurnPoint Excel budgets into entry CSVs. |
 | `purger_state.py` | Persistence layer. | Thread-safe JSON storage for purge counters, history, duplicates. |
@@ -57,16 +57,24 @@ The architecture is modular/procedural (not a strict Page Object Model). Helper 
 
 ### `appointment_item_discovery.py`
 - Primary purpose: resilient Service Type variant truth extraction for Assist appointment editor pages.
-- Assist open sequence:
-  - TP1 bridge editor URL (`appointment-edit.asp?...&cid=<probe_id>`)
-  - direct Assist URL (`assist.turnpoint.co/appointments/new`)
-  - client appointments + `Add Appointment` fallback
-- Readiness gate: extraction starts only when Service Type combobox is present and interactable.
-- Locator strategy: multiple fallbacks per critical element (combobox, option list, variants table) with strategy-hit logging.
+- Assist open sequence (locked path):
+  - navigate to `client-details.asp?eid=<probe_id>&BREAKDOWN_SHOW_APPTS=yes&wide1=yes`
+  - click `Add Appointment`
+  - switch outer iframe: `iframe[src*='appointment-edit.asp']`
+  - switch inner iframe: `iframe[src*='assist.turnpoint.co/appointments/new'][src*='has_parent=true']`
+  - direct Assist URL without parent/client context is unsupported
+- Readiness/capability gate: extraction starts only when all pass:
+  - reload anchor exists: `div[data-cy='service_type_id-reload']`
+  - Service Type combobox is interactable via:
+    - `//div[@data-cy='service_type_id-reload']/preceding::input[@role='combobox'][1]`
+  - sentinel selection yields `day_rate-input` + `day_code-input`
+- Locator strategy: primary XPath anchored to reload control, then listbox/visible-option fallback for selection.
 - Per-Service-Type behavior:
-  - select Service Type with fallback interaction strategies
-  - wait for variants rows to stabilize
+  - select Service Type with deterministic retries (`type + Enter`, exact option click fallback)
+  - guard against stale reads by waiting for variant fingerprint change
+  - read fixed six `data-cy` input pairs (`day/eve/night/saturday/sunday/ph`) for `Rate` + `Code`
   - map `Service Variant Label`, `Rate`, `Code`, `Unit` with raw + normalized fields
+  - emit alias columns for TruthView compatibility: `Parent Service Type`, `Service Type ID`, `Item Number`
   - on failure, emit `Status=FAIL` + `Error Reason`, capture artifacts, continue to next Service Type
 - Outputs:
   - `~/LineItemRates/ServiceTypeTruth/variants/latest/ServiceTypeVariants_latest.csv`

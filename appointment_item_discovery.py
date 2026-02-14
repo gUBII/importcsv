@@ -53,15 +53,19 @@ EXCEL_ILLEGAL_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 VARIANT_COLUMNS = [
     "Parent Service Type ID",
     "Parent Service Type Label",
+    "Parent Service Type",
+    "Service Type ID",
     "Service Variant Label",
     "Rate",
     "Rate (Raw)",
     "Code",
     "Code (Raw)",
+    "Item Number",
     "Unit",
     "Status",
     "Error Reason",
     "Conflict",
+    "Conflict Detail",
     "Probe Client ID",
     "Source URL",
     "Captured At (UTC)",
@@ -107,46 +111,29 @@ CHECKER_SERVICE_TYPE_SELECT = "CHK_SERVICE_TYPE_SELECT"
 CHECKER_VARIANT_TABLE_EXTRACT = "CHK_VARIANT_TABLE_EXTRACT"
 CHECKER_VARIANT_TABLE_MISSING = "CHK_VARIANT_TABLE_MISSING"
 CHECKER_VARIANT_TABLE_EMPTY = "CHK_VARIANT_TABLE_EMPTY"
+CHECKER_VARIANTS_EDITOR_ROUTE = "CHK_VARIANTS_EDITOR_ROUTE"
+CHECKER_VARIANTS_EDITOR_CAPABILITY = "CHK_VARIANTS_EDITOR_CAPABILITY"
 
 ASSIST_DIRECT_URL = "https://assist.turnpoint.co/appointments/new"
-
-SERVICE_TYPE_LOCATOR_STRATEGIES: List[Tuple[str, str, str]] = [
-    ("data-testid", By.CSS_SELECTOR, "[data-testid='service-type-combobox']"),
-    ("name", By.CSS_SELECTOR, "input[name='service_type_id'][role='combobox']"),
-    ("aria-label", By.CSS_SELECTOR, "input[aria-label='Service Type'][role='combobox']"),
-    (
-        "role-aria",
-        By.CSS_SELECTOR,
-        "input[role='combobox'][aria-haspopup='true']",
-    ),
-    (
-        "label-adjacent-xpath",
-        By.XPATH,
-        "//label[contains(normalize-space(.), 'Service Type')]/following::input[@role='combobox'][1]",
-    ),
-]
-
-SERVICE_TYPE_OPTION_LOCATOR_STRATEGIES: List[Tuple[str, str, str]] = [
-    ("role-option", By.CSS_SELECTOR, "[role='option']"),
-    ("react-option", By.CSS_SELECTOR, ".react-select__option"),
-    ("list-item-option", By.XPATH, "//li[contains(@class, 'option')]"),
-]
-
-VARIANT_TABLE_LOCATOR_STRATEGIES: List[Tuple[str, str, str]] = [
-    ("data-testid", By.CSS_SELECTOR, "[data-testid='service-variants-table']"),
-    ("named-table", By.CSS_SELECTOR, "table[aria-label*='Service']"),
-    (
-        "table-with-service-header",
-        By.XPATH,
-        "//table[.//th[contains(normalize-space(.), 'Service')]]",
-    ),
-    (
-        "first-table-after-service-type",
-        By.XPATH,
-        "//label[contains(normalize-space(.), 'Service Type')]/following::table[1]",
-    ),
-    ("fallback-any-table", By.CSS_SELECTOR, "table"),
-]
+SERVICE_TYPE_INPUT_XPATH = (
+    "//div[@data-cy='service_type_id-reload']/preceding::input[@role='combobox'][1]"
+)
+SERVICE_TYPE_RELOAD_CSS = "div[data-cy='service_type_id-reload']"
+SERVICE_TYPE_LISTBOX_CSS = "div[role='listbox']"
+SERVICE_TYPE_OPTION_XPATH = "//div[@role='listbox']//div[@role='option']"
+OUTER_APPOINTMENT_IFRAME_CSS = "iframe[src*='appointment-edit.asp']"
+INNER_ASSIST_IFRAME_CSS = (
+    "iframe[src*='assist.turnpoint.co/appointments/new'][src*='has_parent=true']"
+)
+VARIANT_PREFIXES = ["day", "eve", "night", "saturday", "sunday", "ph"]
+VARIANT_LABEL_FALLBACK = {
+    "day": "Weekday Daytime/Individual Code",
+    "eve": "Weekday Evening",
+    "night": "Weekday Night",
+    "saturday": "Saturday",
+    "sunday": "Sunday",
+    "ph": "Public Holiday",
+}
 
 MODAL_DISMISS_BUTTON_XPATH = (
     "//button[normalize-space()='Close' or normalize-space()='Dismiss' or normalize-space()='OK']"
@@ -378,7 +365,8 @@ def _write_csv(rows: List[Dict[str, str]], fieldnames: List[str], path: Path):
         for row in rows:
             # Sanitize Excel-illegal chars
             cleaned_row = {}
-            for key, value in row.items():
+            for key in fieldnames:
+                value = row.get(key, "")
                 if value is not None:
                     cleaned, _ = _sanitize_excel_text(value)
                     cleaned_row[key] = cleaned
@@ -493,7 +481,8 @@ def _append_to_checkpoint_csv(run_id: str, rows: List[Dict[str, str]]):
             writer.writeheader()
         for row in rows:
             cleaned_row = {}
-            for key, value in row.items():
+            for key in VARIANT_COLUMNS:
+                value = row.get(key, "")
                 if value is not None:
                     cleaned, _ = _sanitize_excel_text(value)
                     cleaned_row[key] = cleaned
@@ -561,9 +550,11 @@ def _capture_assist_failure_artifacts(
 
     current_url = _normalize_text(getattr(driver, "current_url", ""))
     title = _normalize_text(getattr(driver, "title", ""))
+    body_len = 0
     body_snippet_len = 0
     try:
         body = _normalize_text(driver.find_element(By.TAG_NAME, "body").text)
+        body_len = len(body)
         body_snippet_len = len(body[:500])
     except Exception:
         pass
@@ -587,6 +578,7 @@ def _capture_assist_failure_artifacts(
         context={
             "current_url": current_url,
             "title": title,
+            "body_len": body_len,
             "body_snippet_len": body_snippet_len,
             "html_artifact": html.name if html else "",
             "screenshot_artifact": screenshot.name if screenshot else "",
@@ -629,182 +621,401 @@ def _dismiss_blocking_modal_if_present(driver, recorder: DiagnosticsRecorder) ->
     return dismissed
 
 
-def _locate_service_type_combobox(
-    driver,
-    recorder: DiagnosticsRecorder,
-    *,
-    timeout: int = 12,
-    require_interactable: bool = True,
-) -> Tuple[Optional[Any], str]:
-    """
-    Locate Service Type combobox in main document or inside iframes.
-    Returns (element, frame_hint). On success, leaves driver context where found.
-    """
-    deadline = time.time() + timeout
-    attempts = []
-
-    while time.time() < deadline:
-        _switch_to_default_content(driver)
-
-        # Search main document first.
-        for strategy_name, by, selector in SERVICE_TYPE_LOCATOR_STRATEGIES:
-            attempts.append(strategy_name)
-            try:
-                elements = driver.find_elements(by, selector)
-            except Exception:
-                elements = []
-            for element in elements:
-                if not require_interactable or _is_interactable(element):
-                    _record_locator_success(
-                        recorder,
-                        step="locate_service_type",
-                        code="SERVICE_TYPE_LOCATOR_HIT",
-                        strategy=strategy_name,
-                        selector=selector,
-                        frame_hint="main",
-                    )
-                    return element, "main"
-
-        # Search each iframe.
-        try:
-            frames = driver.find_elements(By.TAG_NAME, "iframe")
-        except Exception:
-            frames = []
-        for idx, frame in enumerate(frames):
-            _switch_to_default_content(driver)
-            if not _switch_to_frame(driver, frame):
-                continue
-            frame_hint = f"iframe[{idx}]"
-            for strategy_name, by, selector in SERVICE_TYPE_LOCATOR_STRATEGIES:
-                attempts.append(f"{strategy_name}:{frame_hint}")
-                try:
-                    elements = driver.find_elements(by, selector)
-                except Exception:
-                    elements = []
-                for element in elements:
-                    if not require_interactable or _is_interactable(element):
-                        _record_locator_success(
-                            recorder,
-                            step="locate_service_type",
-                            code="SERVICE_TYPE_LOCATOR_HIT",
-                            strategy=strategy_name,
-                            selector=selector,
-                            frame_hint=frame_hint,
-                        )
-                        return element, frame_hint
-
-        _dismiss_blocking_modal_if_present(driver, recorder)
-        time.sleep(0.35)
-
-    _switch_to_default_content(driver)
-    recorder.event(
-        "WARN",
-        "locate_service_type",
-        "SERVICE_TYPE_LOCATOR_MISS",
-        "Unable to locate Service Type combobox",
-        context={"attempts": attempts[-20:]},
-    )
-    return None, "main"
-
-
-def _find_service_type_reload_button(driver) -> Optional[Any]:
-    """Locate optional service-type reload control near the combobox."""
-    strategies = [
-        (By.CSS_SELECTOR, "[data-cy='service_type_id-reload']"),
-        (By.XPATH, "//div[@role='button' and @data-cy='service_type_id-reload']"),
-        (By.XPATH, "//label[contains(normalize-space(.), 'Service Type')]/following::*[@role='button'][1]"),
-    ]
-    for by, selector in strategies:
-        try:
-            buttons = driver.find_elements(by, selector)
-        except Exception:
-            buttons = []
-        for button in buttons:
-            if _is_interactable(button):
-                return button
+def _find_service_type_input(driver, require_interactable: bool = True):
+    """Locate the Service Type combobox using the Atlas-confirmed primary XPath."""
+    try:
+        candidates = driver.find_elements(By.XPATH, SERVICE_TYPE_INPUT_XPATH)
+    except Exception:
+        candidates = []
+    for elem in candidates:
+        if not require_interactable or _is_interactable(elem):
+            return elem
     return None
 
 
-def _wait_for_service_type_options(driver, timeout: float = 4.0) -> List[Any]:
-    """Wait for Service Type option elements to appear."""
+def _wait_for_listbox_open(driver, timeout: float = 4.0) -> bool:
+    """Wait for listbox open state."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        for _, by, selector in SERVICE_TYPE_OPTION_LOCATOR_STRATEGIES:
-            try:
-                options = driver.find_elements(by, selector)
-            except Exception:
-                options = []
-            visible = [opt for opt in options if _normalize_text(getattr(opt, "text", ""))]
-            if visible:
-                return visible
-        time.sleep(0.2)
-    return []
+        try:
+            listboxes = driver.find_elements(By.CSS_SELECTOR, SERVICE_TYPE_LISTBOX_CSS)
+        except Exception:
+            listboxes = []
+        if listboxes:
+            return True
+        time.sleep(0.15)
+    return False
 
 
-def _click_matching_option(driver, target_label: str, target_value: str = "") -> bool:
-    """Click best-matching option in open combobox list."""
-    options = _wait_for_service_type_options(driver, timeout=5.0)
+def _wait_for_combobox_closed(input_el, timeout: float = 5.0) -> bool:
+    """Wait for aria-expanded=false after selection."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        expanded = _normalize_text(input_el.get_attribute("aria-expanded")).lower()
+        if expanded in ("false", ""):
+            return True
+        time.sleep(0.12)
+    return False
+
+
+def _clear_and_type(input_el, text: str):
+    """Clear combobox and type query text."""
+    try:
+        input_el.click()
+    except Exception:
+        pass
+    try:
+        input_el.clear()
+    except Exception:
+        pass
+    try:
+        input_el.send_keys(Keys.CONTROL, "a")
+        input_el.send_keys(Keys.BACKSPACE)
+    except Exception:
+        pass
+    if text:
+        input_el.send_keys(text)
+
+
+def _click_matching_service_option(driver, expected_label: str, allow_contains: bool = False) -> bool:
+    """Click a matching option in div[role='listbox'] list."""
+    try:
+        options = driver.find_elements(By.XPATH, SERVICE_TYPE_OPTION_XPATH)
+    except Exception:
+        options = []
     if not options:
         return False
 
-    norm_target_label = _normalize_text(target_label).lower()
-    norm_target_value = _normalize_text(target_value).lower()
-
-    # 1) exact label
+    target = _normalize_text(expected_label).lower()
     for option in options:
-        label = _normalize_text(getattr(option, "text", ""))
-        if label.lower() == norm_target_label and label:
+        text = _normalize_text(getattr(option, "text", ""))
+        if text.lower() == target:
             option.click()
             return True
 
-    # 2) data-value / value match
-    for option in options:
-        value = _normalize_text(option.get_attribute("data-value") or option.get_attribute("value"))
-        if value and norm_target_value and value.lower() == norm_target_value:
-            option.click()
-            return True
-
-    # 3) prefix label
-    for option in options:
-        label = _normalize_text(getattr(option, "text", ""))
-        if norm_target_label and label.lower().startswith(norm_target_label[:18]):
-            try:
+    if allow_contains and target:
+        for option in options:
+            text = _normalize_text(getattr(option, "text", ""))
+            if target in text.lower():
                 option.click()
-            except Exception:
-                driver.execute_script("arguments[0].click();", option)
-            return True
+                return True
 
     return False
 
 
-def _wait_for_assist_ready(driver, recorder: DiagnosticsRecorder, timeout: int = 20) -> bool:
-    """Readiness gate: Service Type combobox must be present and interactable."""
-    element, frame_hint = _locate_service_type_combobox(
-        driver,
-        recorder,
-        timeout=timeout,
-        require_interactable=True,
-    )
-    if not element:
+def _select_service_type_option(
+    driver,
+    query_text: str,
+    expected_label: str,
+    recorder: DiagnosticsRecorder,
+    *,
+    allow_contains: bool = False,
+) -> bool:
+    """Select service type by type+enter, then exact option-click fallback."""
+    input_el = _find_service_type_input(driver, require_interactable=True)
+    if not input_el:
         return False
-    if not _is_interactable(element):
-        return False
-    recorder.checker(
-        "assist_readiness",
-        "PASS",
-        CHECKER_SERVICE_TYPE_SELECT,
-        "Service Type combobox located and interactable",
-        url=_normalize_text(getattr(driver, "current_url", "")),
-        selector="; ".join(s for _, _, s in SERVICE_TYPE_LOCATOR_STRATEGIES[:3]),
-    )
+
+    _clear_and_type(input_el, query_text)
+    _wait_for_listbox_open(driver, timeout=4.0)
+    try:
+        input_el.send_keys(Keys.ENTER)
+    except Exception:
+        pass
+
+    if _wait_for_combobox_closed(input_el, timeout=4.0):
+        return True
+
+    # Fallback to explicit option click by visible text.
+    _clear_and_type(input_el, query_text)
+    if _wait_for_listbox_open(driver, timeout=3.0):
+        clicked = _click_matching_service_option(driver, expected_label, allow_contains=allow_contains)
+        if clicked and _wait_for_combobox_closed(input_el, timeout=4.0):
+            return True
+
     recorder.event(
-        "INFO",
-        "assist_readiness",
-        "ASSIST_READY",
-        f"Assist readiness passed in {frame_hint}",
-        context={"frame": frame_hint},
+        "WARN",
+        "select_option",
+        "SERVICE_TYPE_SELECT_NOT_CLOSED",
+        f"Combobox did not settle for '{expected_label}'",
     )
-    return True
+    return False
+
+
+def _variant_input_elements(driver, prefix: str) -> Tuple[Optional[Any], Optional[Any]]:
+    """Return (rate_el, code_el) for one prefix."""
+    try:
+        rate_elems = driver.find_elements(By.CSS_SELECTOR, f"input[data-cy='{prefix}_rate-input']")
+    except Exception:
+        rate_elems = []
+    try:
+        code_elems = driver.find_elements(By.CSS_SELECTOR, f"input[data-cy='{prefix}_code-input']")
+    except Exception:
+        code_elems = []
+    rate_el = rate_elems[0] if rate_elems else None
+    code_el = code_elems[0] if code_elems else None
+    return rate_el, code_el
+
+
+def _read_variant_fingerprint(driver) -> Tuple[Tuple[str, str, str], ...]:
+    """Fingerprint current 6-pair values to detect stale selections."""
+    fp: List[Tuple[str, str, str]] = []
+    for prefix in VARIANT_PREFIXES:
+        rate_el, code_el = _variant_input_elements(driver, prefix)
+        rate_val = _normalize_text(rate_el.get_attribute("value")) if rate_el else ""
+        code_val = _normalize_text(code_el.get_attribute("value")) if code_el else ""
+        fp.append((prefix, rate_val, code_val))
+    return tuple(fp)
+
+
+def _wait_for_fingerprint_change(
+    driver,
+    before: Tuple[Tuple[str, str, str], ...],
+    timeout: float = 6.0,
+) -> bool:
+    """Wait until variant fingerprint changes."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        after = _read_variant_fingerprint(driver)
+        if after != before:
+            time.sleep(0.35)
+            return True
+        time.sleep(0.15)
+    return False
+
+
+def _derive_variant_label(driver, rate_el, prefix: str) -> str:
+    """Derive label from nearest row wrapper text before '$', with static fallback."""
+    script = """
+    const input = arguments[0];
+    let node = input;
+    for (let i = 0; i < 10 && node; i++) {
+      if (node.tagName && node.tagName.toLowerCase() === "div") {
+        const txt = (node.innerText || "").replace(/\\s+/g, " ").trim();
+        if (txt && txt.includes("$")) {
+          const parts = txt.split("$");
+          if (parts.length > 0) {
+            const label = parts[0].replace(/\\s+/g, " ").trim();
+            if (label) return label;
+          }
+        }
+      }
+      node = node.parentElement;
+    }
+    return "";
+    """
+    try:
+        label = _normalize_text(driver.execute_script(script, rate_el))
+    except Exception:
+        label = ""
+    return label or VARIANT_LABEL_FALLBACK.get(prefix, prefix.title())
+
+
+def _derive_unit_text(driver, rate_el) -> str:
+    """Extract '/ hour' unit marker near rate input."""
+    script = """
+    const input = arguments[0];
+    let node = input;
+    for (let i = 0; i < 8 && node; i++) {
+      const txt = (node.innerText || "").replace(/\\s+/g, " ").trim();
+      if (/\\/\\s*hour/i.test(txt)) return "/ hour";
+      node = node.parentElement;
+    }
+    return "";
+    """
+    try:
+        return _normalize_text(driver.execute_script(script, rate_el))
+    except Exception:
+        return ""
+
+
+def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[Dict]:
+    """
+    Extract fixed 6 Service Type variant pairs from data-cy inputs.
+    """
+    rows: List[Dict[str, str]] = []
+    for prefix in VARIANT_PREFIXES:
+        rate_el, code_el = _variant_input_elements(driver, prefix)
+        if not rate_el or not code_el:
+            recorder.event(
+                "WARN",
+                "extract_variants",
+                CHECKER_VARIANT_TABLE_MISSING,
+                f"Missing variant input pair for prefix={prefix}",
+            )
+            return []
+
+        rate_raw = _normalize_text(rate_el.get_attribute("value"))
+        code_raw = _normalize_text(code_el.get_attribute("value"))
+        rows.append(
+            {
+                "Service Variant Label": _derive_variant_label(driver, rate_el, prefix),
+                "Rate": _coerce_rate_text(rate_raw),
+                "Rate (Raw)": rate_raw,
+                "Code": _normalize_code_text(code_raw),
+                "Code (Raw)": code_raw,
+                "Unit": _derive_unit_text(driver, rate_el),
+            }
+        )
+
+    recorder.checker(
+        "extract_variants",
+        "PASS",
+        CHECKER_VARIANT_TABLE_EXTRACT,
+        f"Extracted {len(rows)} rows via fixed variant input pairs",
+        option_count=len(rows),
+        url=_normalize_text(getattr(driver, "current_url", "")),
+    )
+    return rows
+
+
+def _click_add_appointment(driver) -> bool:
+    """Click Add Appointment from TP1 client appointments tab."""
+    selectors = [
+        (By.XPATH, "//a[contains(normalize-space(.), 'Add Appointment')]"),
+        (By.XPATH, "//button[contains(normalize-space(.), 'Add Appointment')]"),
+        (By.XPATH, "//a[contains(@href, 'appointment-edit.asp')]"),
+    ]
+    for by, selector in selectors:
+        try:
+            elems = driver.find_elements(by, selector)
+        except Exception:
+            elems = []
+        for elem in elems:
+            if not _is_interactable(elem):
+                continue
+            try:
+                elem.click()
+            except Exception:
+                try:
+                    driver.execute_script("arguments[0].click();", elem)
+                except Exception:
+                    continue
+            return True
+    return False
+
+
+def _switch_to_variants_capable_editor(
+    driver,
+    client_id: str,
+    recorder: DiagnosticsRecorder,
+) -> bool:
+    """Navigate TP1 Add Appointment flow and switch into nested iframes."""
+    if not client_id:
+        recorder.checker(
+            "open_assist",
+            "FAIL",
+            CHECKER_VARIANTS_EDITOR_ROUTE,
+            "Probe client id is required for variants-capable route.",
+            url=_normalize_text(getattr(driver, "current_url", "")),
+        )
+        return False
+
+    _switch_to_default_content(driver)
+    target_url = (
+        f"{BASE_URL.rstrip('/')}/client-details.asp?eid={client_id}&BREAKDOWN_SHOW_APPTS=yes&wide1=yes"
+    )
+    try:
+        driver.get(target_url)
+        WebDriverWait(driver, 25).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        if not _click_add_appointment(driver):
+            raise RuntimeError("Could not click Add Appointment")
+
+        time.sleep(0.6)
+        outer = None
+        deadline = time.time() + 12
+        while time.time() < deadline and not outer:
+            try:
+                outer_frames = driver.find_elements(By.CSS_SELECTOR, OUTER_APPOINTMENT_IFRAME_CSS)
+            except Exception:
+                outer_frames = []
+            outer = outer_frames[0] if outer_frames else None
+            if not outer:
+                time.sleep(0.2)
+        if not outer:
+            raise RuntimeError("Outer appointment-edit iframe not found")
+
+        _switch_to_default_content(driver)
+        if not _switch_to_frame(driver, outer):
+            raise RuntimeError("Failed to switch to outer iframe")
+
+        inner = None
+        deadline = time.time() + 12
+        while time.time() < deadline and not inner:
+            try:
+                inner_frames = driver.find_elements(By.CSS_SELECTOR, INNER_ASSIST_IFRAME_CSS)
+            except Exception:
+                inner_frames = []
+            inner = inner_frames[0] if inner_frames else None
+            if not inner:
+                time.sleep(0.2)
+        if not inner:
+            raise RuntimeError("Inner Assist iframe with has_parent=true not found")
+        if not _switch_to_frame(driver, inner):
+            raise RuntimeError("Failed to switch to inner iframe")
+
+        reload_ok = bool(driver.find_elements(By.CSS_SELECTOR, SERVICE_TYPE_RELOAD_CSS))
+        input_ok = _find_service_type_input(driver, require_interactable=True) is not None
+        if not reload_ok or not input_ok:
+            raise RuntimeError("Capability gate failed: reload anchor or service input missing")
+
+        # Sentinel select to confirm this context renders variant inputs.
+        sentinel_ok = _select_service_type_option(
+            driver,
+            "(SIL) Active Night-Time",
+            "(SIL) Active Night-Time",
+            recorder,
+            allow_contains=True,
+        )
+        if not sentinel_ok:
+            # Last fallback: open list and accept first option.
+            input_el = _find_service_type_input(driver, require_interactable=True)
+            if input_el:
+                _clear_and_type(input_el, "")
+                _wait_for_listbox_open(driver, timeout=3.0)
+                input_el.send_keys(Keys.ENTER)
+                _wait_for_combobox_closed(input_el, timeout=4.0)
+
+        day_rate_ok = bool(driver.find_elements(By.CSS_SELECTOR, "input[data-cy='day_rate-input']"))
+        day_code_ok = bool(driver.find_elements(By.CSS_SELECTOR, "input[data-cy='day_code-input']"))
+        if not day_rate_ok or not day_code_ok:
+            raise RuntimeError("Capability gate failed: day_rate/day_code inputs absent after sentinel select")
+
+        recorder.checker(
+            "open_assist",
+            "PASS",
+            CHECKER_VARIANTS_EDITOR_ROUTE,
+            "Switched to TP1 Add Appointment nested editor iframes",
+            client_id=str(client_id),
+            url=_normalize_text(getattr(driver, "current_url", "")),
+        )
+        recorder.checker(
+            "capability_gate",
+            "PASS",
+            CHECKER_VARIANTS_EDITOR_CAPABILITY,
+            "Variants-capable editor validated",
+            client_id=str(client_id),
+            url=_normalize_text(getattr(driver, "current_url", "")),
+        )
+        return True
+    except Exception as exc:
+        screenshot, html = _capture_assist_failure_artifacts(
+            driver,
+            recorder,
+            prefix=f"switch_variants_editor_{client_id}",
+            reason=str(exc),
+        )
+        recorder.checker(
+            "open_assist",
+            "FAIL",
+            CHECKER_VARIANTS_EDITOR_ROUTE,
+            str(exc),
+            client_id=str(client_id),
+            url=_normalize_text(getattr(driver, "current_url", "")),
+            screenshot=screenshot,
+            html=html,
+        )
+        return False
 
 
 def _open_assist_appointments_new(
@@ -812,143 +1023,45 @@ def _open_assist_appointments_new(
     recorder: DiagnosticsRecorder,
     probe_client_id: str = "",
 ) -> bool:
-    """
-    Open appointment editor using bridge and direct routes.
-    Success criteria: Service Type combobox is interactable.
-    """
-    attempts: List[Tuple[str, str]] = []
-    bridge_url = (
-        f"{BASE_URL.rstrip('/')}/appointment-edit.asp?NavShow=none&createRepeat=no&cid={probe_client_id}&appointmentDate_override="
-        if probe_client_id
-        else ""
-    )
-    route_candidates: List[Tuple[str, str]] = []
-    if bridge_url:
-        route_candidates.append(("tp1_bridge_direct", bridge_url))
-    route_candidates.append(("assist_direct", ASSIST_DIRECT_URL))
-    if probe_client_id:
-        route_candidates.append(
-            (
-                "tp1_client_appointments",
-                f"{BASE_URL.rstrip('/')}/client-details.asp?eid={probe_client_id}&BREAKDOWN_SHOW_APPOINTMENTS=yes",
-            )
-        )
-
-    for route_name, url in route_candidates:
-        attempts.append((route_name, url))
-        try:
-            driver.get(url)
-            WebDriverWait(driver, 25).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-            time.sleep(0.4)
-
-            if route_name == "tp1_client_appointments":
-                add_selectors = [
-                    (By.XPATH, "//a[contains(normalize-space(.), 'Add Appointment')]"),
-                    (By.XPATH, "//button[contains(normalize-space(.), 'Add Appointment')]"),
-                    (By.XPATH, "//a[contains(@href, 'appointment-edit.asp')]"),
-                ]
-                clicked = False
-                for by, selector in add_selectors:
-                    try:
-                        elems = driver.find_elements(by, selector)
-                    except Exception:
-                        elems = []
-                    for elem in elems:
-                        if _is_interactable(elem):
-                            try:
-                                elem.click()
-                            except Exception:
-                                driver.execute_script("arguments[0].click();", elem)
-                            clicked = True
-                            time.sleep(0.8)
-                            break
-                    if clicked:
-                        break
-                if not clicked and bridge_url:
-                    driver.get(bridge_url)
-                    time.sleep(0.8)
-
-            if _wait_for_assist_ready(driver, recorder, timeout=12):
-                recorder.checker(
-                    "open_assist",
-                    "PASS",
-                    CHECKER_APPOINTMENT,
-                    f"Assist opened via {route_name}",
-                    url=_normalize_text(getattr(driver, "current_url", "")),
-                )
-                return True
-
-            _capture_assist_failure_artifacts(
-                driver,
-                recorder,
-                prefix=f"assist_open_fail_{route_name}",
-                reason=f"Readiness failed after opening route {route_name}",
-            )
-        except Exception as exc:
-            screenshot, html = _capture_assist_failure_artifacts(
-                driver,
-                recorder,
-                prefix=f"assist_open_exception_{route_name}",
-                reason=f"Route {route_name} failed: {exc}",
-            )
-            recorder.checker(
-                "open_assist",
-                "FAIL",
-                CHECKER_APPOINTMENT,
-                f"Route {route_name} exception: {exc}",
-                url=_normalize_text(getattr(driver, "current_url", "")),
-                screenshot=screenshot,
-                html=html,
-            )
-
-    recorder.checker(
-        "open_assist",
-        "FAIL",
-        CHECKER_APPOINTMENT,
-        f"All assist entry routes failed: {attempts}",
-        url=_normalize_text(getattr(driver, "current_url", "")),
-    )
-    return False
+    """Compatibility wrapper: open only via TP1 nested-iframe route."""
+    return _switch_to_variants_capable_editor(driver, str(probe_client_id or "").strip(), recorder)
 
 
 def _collect_assist_options(driver, recorder: DiagnosticsRecorder) -> List[Dict[str, str]]:
-    """Extract visible Service Type options from combobox list."""
+    """Collect Service Type options from listbox in inner Assist editor."""
     options: List[Dict[str, str]] = []
-    combobox, _ = _locate_service_type_combobox(
-        driver,
-        recorder,
-        timeout=10,
-        require_interactable=True,
-    )
-    if not combobox:
+    input_el = _find_service_type_input(driver, require_interactable=True)
+    if not input_el:
         return options
 
     try:
-        combobox.click()
-    except Exception:
-        driver.execute_script("arguments[0].click();", combobox)
-    time.sleep(0.3)
-
-    option_elements = _wait_for_service_type_options(driver, timeout=5.0)
-    for elem in option_elements:
-        label = _normalize_text(getattr(elem, "text", ""))
-        value = _normalize_text(elem.get_attribute("data-value") or elem.get_attribute("value"))
-        if label:
-            options.append({"label": label, "value": value or label})
-
-    # Dismiss open list.
-    try:
-        combobox.send_keys(Keys.ESCAPE)
+        input_el.click()
     except Exception:
         pass
+    _wait_for_listbox_open(driver, timeout=4.0)
+
+    seen = set()
+    try:
+        option_elems = driver.find_elements(By.XPATH, SERVICE_TYPE_OPTION_XPATH)
+    except Exception:
+        option_elems = []
+    for elem in option_elems:
+        label = _normalize_text(getattr(elem, "text", ""))
+        if label and label not in seen:
+            seen.add(label)
+            options.append({"label": label, "value": label})
+
+    try:
+        input_el.send_keys(Keys.ESCAPE)
+    except Exception:
+        pass
+    _wait_for_combobox_closed(input_el, timeout=3.0)
 
     recorder.event(
         "INFO",
         "collect_options",
         "OPTIONS_COLLECTED",
-        f"Collected {len(options)} options from Assist",
+        f"Collected {len(options)} Service Type options from listbox",
         option_count=len(options),
     )
     return options
@@ -966,279 +1079,52 @@ def _select_assist_option_with_retries(
     recorder: DiagnosticsRecorder,
     max_retries: int = 3,
 ) -> bool:
-    """
-    Select Service Type with layered fallbacks:
-    1) click combobox + click exact option
-    2) reload control + click option
-    3) type label + Enter
-    """
-    strategies = ["click_option", "reload_then_click", "type_then_enter"]
+    """Select by typing + Enter first, then exact option click fallback."""
+    _ = target_value  # options carry visible text only in this editor.
+    full_label = _normalize_text(target_label)
+    if not full_label:
+        return False
+    tokens = full_label.split()
+    strategies = [
+        ("full_label", full_label, False),
+        ("distinctive_substring", " ".join(tokens[: min(4, len(tokens))]), True),
+        ("prefix", full_label[:40], True),
+    ]
     for attempt in range(max_retries):
-        for strategy in strategies:
+        for strategy_name, query, allow_contains in strategies:
             try:
-                combobox, frame_hint = _locate_service_type_combobox(
+                success = _select_service_type_option(
                     driver,
+                    query,
+                    full_label,
                     recorder,
-                    timeout=6,
-                    require_interactable=True,
+                    allow_contains=allow_contains,
                 )
-                if not combobox:
-                    continue
-
-                try:
-                    combobox.click()
-                except Exception:
-                    driver.execute_script("arguments[0].click();", combobox)
-                time.sleep(0.2)
-
-                if strategy == "reload_then_click":
-                    reload_btn = _find_service_type_reload_button(driver)
-                    if reload_btn:
-                        try:
-                            reload_btn.click()
-                        except Exception:
-                            driver.execute_script("arguments[0].click();", reload_btn)
-                        time.sleep(0.4)
-                        try:
-                            combobox.click()
-                        except Exception:
-                            driver.execute_script("arguments[0].click();", combobox)
-                        time.sleep(0.2)
-
-                if strategy in {"click_option", "reload_then_click"}:
-                    if _click_matching_option(driver, target_label, target_value):
-                        recorder.event(
-                            "INFO",
-                            "select_option",
-                            "SERVICE_TYPE_SELECTED",
-                            f"Selected '{target_label}' using {strategy}",
-                            context={"strategy": strategy, "frame": frame_hint},
-                        )
-                        return True
-
-                if strategy == "type_then_enter":
-                    try:
-                        combobox.clear()
-                    except Exception:
-                        pass
-                    combobox.send_keys(target_label)
-                    time.sleep(0.35)
-                    combobox.send_keys(Keys.ENTER)
+                if success:
                     recorder.event(
                         "INFO",
                         "select_option",
                         "SERVICE_TYPE_SELECTED",
-                        f"Selected '{target_label}' using type+enter",
-                        context={"strategy": strategy, "frame": frame_hint},
+                        f"Selected '{full_label}' via {strategy_name}",
+                        context={"attempt": attempt + 1, "strategy": strategy_name},
                     )
                     return True
-
             except Exception as exc:
                 recorder.event(
                     "WARN",
                     "select_option",
                     "SELECT_STRATEGY_FAILED",
                     str(exc),
-                    context={
-                        "strategy": strategy,
-                        "attempt": attempt + 1,
-                        "target_label": target_label,
-                    },
+                    context={"attempt": attempt + 1, "strategy": strategy_name},
                 )
                 continue
-
     recorder.event(
         "ERROR",
         "select_option",
         "SELECT_FAILED_ALL_STRATEGIES",
-        f"Could not select '{target_label}'",
-        context={"target_label": target_label, "target_value": target_value},
+        f"Could not select '{full_label}'",
     )
     return False
-
-
-# =============================================================================
-# VARIANT TABLE EXTRACTION
-# =============================================================================
-
-
-def _table_headers(table_elem) -> List[str]:
-    """Extract normalized table headers."""
-    headers = []
-    try:
-        header_cells = table_elem.find_elements(By.XPATH, ".//thead//th | .//tr[1]/th")
-    except Exception:
-        header_cells = []
-    for cell in header_cells:
-        token = _normalize_text(getattr(cell, "text", ""))
-        if token:
-            headers.append(token.lower())
-    return headers
-
-
-def _locate_variant_table(driver, recorder: DiagnosticsRecorder) -> Tuple[Optional[Any], str]:
-    """Locate variant table with layered selectors."""
-    for strategy_name, by, selector in VARIANT_TABLE_LOCATOR_STRATEGIES:
-        try:
-            tables = driver.find_elements(by, selector)
-        except Exception:
-            tables = []
-        for table in tables:
-            headers = _table_headers(table)
-            if headers:
-                joined = " ".join(headers)
-                if "service" not in joined or "rate" not in joined or "code" not in joined:
-                    if strategy_name != "fallback-any-table":
-                        continue
-            recorder.event(
-                "INFO",
-                "locate_variant_table",
-                "VARIANT_TABLE_LOCATOR_HIT",
-                f"Variant table found via {strategy_name}",
-                selector=selector,
-                context={"strategy": strategy_name, "headers": headers},
-            )
-            return table, strategy_name
-    recorder.event(
-        "WARN",
-        "locate_variant_table",
-        CHECKER_VARIANT_TABLE_MISSING,
-        "Variant table not found via configured locators",
-    )
-    return None, ""
-
-
-def _extract_cell_text(cell) -> str:
-    """Extract text/value from cell including input-backed values."""
-    value = _normalize_text(cell.get_attribute("value"))
-    if value:
-        return value
-    try:
-        inputs = cell.find_elements(By.XPATH, ".//input | .//textarea")
-    except Exception:
-        inputs = []
-    for input_elem in inputs:
-        value = _normalize_text(input_elem.get_attribute("value"))
-        if value:
-            return value
-    return _normalize_text(getattr(cell, "text", ""))
-
-
-def _wait_for_variants_to_stabilize(
-    driver,
-    recorder: DiagnosticsRecorder,
-    timeout: float = 8.0,
-) -> Tuple[Optional[Any], int]:
-    """Wait until variant row count is stable for at least two polls."""
-    deadline = time.time() + timeout
-    prev_count = -1
-    stable_cycles = 0
-    last_table = None
-    while time.time() < deadline:
-        table, _ = _locate_variant_table(driver, recorder)
-        if table is None:
-            time.sleep(0.25)
-            continue
-        last_table = table
-        try:
-            row_elements = table.find_elements(By.CSS_SELECTOR, "tbody tr")
-            if not row_elements:
-                row_elements = table.find_elements(By.XPATH, ".//tr[td]")
-        except Exception:
-            row_elements = []
-        count = len(row_elements)
-        if count > 0 and count == prev_count:
-            stable_cycles += 1
-            if stable_cycles >= 2:
-                return table, count
-        else:
-            stable_cycles = 0
-        prev_count = count
-        time.sleep(0.25)
-    return last_table, max(prev_count, 0)
-
-
-def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[Dict]:
-    """
-    Extract variant rows from Assist appointment details table.
-    Returns list of variant dicts with keys:
-    - Service Variant Label
-    - Rate
-    - Rate (Raw)
-    - Code
-    - Code (Raw)
-    - Unit
-    """
-    extracted_rows: List[Dict[str, str]] = []
-    table, observed_count = _wait_for_variants_to_stabilize(driver, recorder, timeout=9.0)
-    if table is None:
-        recorder.checker(
-            "extract_variants",
-            "FAIL",
-            CHECKER_VARIANT_TABLE_MISSING,
-            "Variant table not found",
-            url=_normalize_text(getattr(driver, "current_url", "")),
-        )
-        return extracted_rows
-
-    try:
-        row_elements = table.find_elements(By.CSS_SELECTOR, "tbody tr")
-        if not row_elements:
-            row_elements = table.find_elements(By.XPATH, ".//tr[td]")
-    except Exception:
-        row_elements = []
-
-    for row_elem in row_elements:
-        try:
-            cells = row_elem.find_elements(By.CSS_SELECTOR, "td")
-            if not cells:
-                cells = row_elem.find_elements(By.XPATH, ".//td | .//div[@role='cell']")
-            if len(cells) < 3:
-                continue
-
-            service_label = _extract_cell_text(cells[0])
-            rate_raw = _extract_cell_text(cells[1])
-            code_raw = _extract_cell_text(cells[2])
-            unit_hint = _extract_cell_text(cells[3]) if len(cells) > 3 else ""
-            rate_norm, unit = _split_rate_and_unit(rate_raw, unit_hint)
-            code_norm = _normalize_code_text(code_raw)
-
-            if not service_label:
-                continue
-
-            extracted_rows.append(
-                {
-                    "Service Variant Label": service_label,
-                    "Rate": rate_norm,
-                    "Rate (Raw)": rate_raw,
-                    "Code": code_norm,
-                    "Code (Raw)": code_raw,
-                    "Unit": unit,
-                }
-            )
-        except Exception:
-            continue
-
-    if extracted_rows:
-        recorder.checker(
-            "extract_variants",
-            "PASS",
-            CHECKER_VARIANT_TABLE_EXTRACT,
-            f"Extracted {len(extracted_rows)} rows",
-            option_count=len(extracted_rows),
-            url=_normalize_text(getattr(driver, "current_url", "")),
-        )
-    else:
-        code = CHECKER_VARIANT_TABLE_EMPTY if observed_count > 0 else CHECKER_VARIANT_TABLE_MISSING
-        recorder.checker(
-            "extract_variants",
-            "FAIL",
-            code,
-            f"Variant table had no extractable rows (observed_row_count={observed_count})",
-            option_count=observed_count,
-            url=_normalize_text(getattr(driver, "current_url", "")),
-        )
-    return extracted_rows
 
 
 def _load_service_types_from_reference_index(
@@ -1332,18 +1218,23 @@ def _build_variant_record(
     probe_client_id: str,
     source_url: str,
 ) -> Dict[str, str]:
+    code_value = variant.get("Code", "")
     return {
         "Parent Service Type ID": service_type_id,
         "Parent Service Type Label": service_type_label,
+        "Parent Service Type": service_type_label,
+        "Service Type ID": service_type_id,
         "Service Variant Label": variant.get("Service Variant Label", ""),
         "Rate": variant.get("Rate", ""),
         "Rate (Raw)": variant.get("Rate (Raw)", ""),
-        "Code": variant.get("Code", ""),
+        "Code": code_value,
         "Code (Raw)": variant.get("Code (Raw)", ""),
+        "Item Number": code_value,
         "Unit": variant.get("Unit", ""),
         "Status": "PASS",
         "Error Reason": "",
         "Conflict": "UNKNOWN",
+        "Conflict Detail": "",
         "Probe Client ID": probe_client_id,
         "Source URL": source_url,
         "Captured At (UTC)": _utc_now(),
@@ -1361,15 +1252,19 @@ def _build_failure_record(
     return {
         "Parent Service Type ID": service_type_id,
         "Parent Service Type Label": service_type_label,
+        "Parent Service Type": service_type_label,
+        "Service Type ID": service_type_id,
         "Service Variant Label": "",
         "Rate": "",
         "Rate (Raw)": "",
         "Code": "",
         "Code (Raw)": "",
+        "Item Number": "",
         "Unit": "",
         "Status": "FAIL",
         "Error Reason": _normalize_text(reason),
         "Conflict": "N/A",
+        "Conflict Detail": "",
         "Probe Client ID": probe_client_id,
         "Source URL": source_url,
         "Captured At (UTC)": _utc_now(),
@@ -1460,6 +1355,8 @@ def extract_service_type_variants(
     if isinstance(probe_client_ids, str):
         probe_client_ids = [probe_client_ids]
     probe_client_ids = [str(cid).strip() for cid in probe_client_ids if cid]
+    if not probe_client_ids:
+        raise RuntimeError("At least one probe_client_id is required for TP1 Add Appointment extraction.")
 
     # Create run ID
     run_id = line_item_paths.make_run_id("VARIANTS")
@@ -1548,6 +1445,7 @@ def extract_service_type_variants(
         _emit(f"Total Service Types queued: {len(all_service_types)}", on_progress)
 
         # Extract variants for each Service Type
+        current_probe_context = preferred_probe
         for st_value, st_label in sorted(all_service_types.items(), key=lambda kv: kv[1].lower()):
             if force_refresh:
                 processed_flag = False
@@ -1558,41 +1456,189 @@ def extract_service_type_variants(
                 _emit(f"Skipping {st_label} (already processed)", on_progress)
                 continue
 
-            source_url = _normalize_text(getattr(driver, "current_url", ""))
-            try:
-                _emit(f"Extracting variants for {st_label}...", on_progress)
+            service_pass = False
+            probes_for_type = probe_client_ids if len(probe_client_ids) > 1 else [preferred_probe]
+            for probe_id in probes_for_type:
+                source_url = _normalize_text(getattr(driver, "current_url", ""))
+                try:
+                    _emit(f"Extracting variants for {st_label} (probe {probe_id})...", on_progress)
 
-                # Select Service Type
-                success = _select_assist_option_with_retries(
-                    driver,
-                    st_value,
-                    st_label,
-                    recorder,
-                )
+                    if probe_id != current_probe_context or len(probes_for_type) > 1:
+                        if not _switch_to_variants_capable_editor(driver, probe_id, recorder):
+                            reason = "Unable to open variants-capable nested iframe editor for probe."
+                            failure_row = _build_failure_record(
+                                service_type_id=st_value,
+                                service_type_label=st_label,
+                                probe_client_id=probe_id,
+                                source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
+                                reason=reason,
+                            )
+                            all_variants.append(failure_row)
+                            _append_to_checkpoint_csv(run_id, [failure_row])
+                            if on_row:
+                                on_row(failure_row)
+                            checkpoint["total_variant_rows"] = len(all_variants)
+                            _update_checkpoint(run_id, checkpoint)
+                            continue
+                        current_probe_context = probe_id
 
-                if not success:
-                    reason = "Service Type selection failed after fallback strategies."
+                    before_fp = _read_variant_fingerprint(driver)
+                    success = _select_assist_option_with_retries(
+                        driver,
+                        st_value,
+                        st_label,
+                        recorder,
+                    )
+                    if not success:
+                        reason = "Service Type selection failed after fallback strategies."
+                        screenshot, html = _capture_assist_failure_artifacts(
+                            driver,
+                            recorder,
+                            prefix=f"service_type_select_fail_{st_value}_{probe_id}",
+                            reason=reason,
+                        )
+                        recorder.checker(
+                            "service_type_select",
+                            "FAIL",
+                            CHECKER_SERVICE_TYPE_SELECT,
+                            reason,
+                            client_id=probe_id,
+                            url=_normalize_text(getattr(driver, "current_url", "")),
+                            selector=SERVICE_TYPE_INPUT_XPATH,
+                            screenshot=screenshot,
+                            html=html,
+                        )
+                        failure_row = _build_failure_record(
+                            service_type_id=st_value,
+                            service_type_label=st_label,
+                            probe_client_id=probe_id,
+                            source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
+                            reason=reason,
+                        )
+                        all_variants.append(failure_row)
+                        _append_to_checkpoint_csv(run_id, [failure_row])
+                        if on_row:
+                            on_row(failure_row)
+                        checkpoint["total_variant_rows"] = len(all_variants)
+                        _update_checkpoint(run_id, checkpoint)
+                        continue
+
+                    if not _wait_for_fingerprint_change(driver, before_fp, timeout=6.0):
+                        reason = "Variant fingerprint did not change after Service Type selection."
+                        screenshot, html = _capture_assist_failure_artifacts(
+                            driver,
+                            recorder,
+                            prefix=f"stale_fingerprint_{st_value}_{probe_id}",
+                            reason=reason,
+                        )
+                        recorder.checker(
+                            "extract_variants",
+                            "FAIL",
+                            CHECKER_VARIANT_TABLE_EMPTY,
+                            reason,
+                            client_id=probe_id,
+                            url=_normalize_text(getattr(driver, "current_url", "")),
+                            screenshot=screenshot,
+                            html=html,
+                        )
+                        failure_row = _build_failure_record(
+                            service_type_id=st_value,
+                            service_type_label=st_label,
+                            probe_client_id=probe_id,
+                            source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
+                            reason=reason,
+                        )
+                        all_variants.append(failure_row)
+                        _append_to_checkpoint_csv(run_id, [failure_row])
+                        if on_row:
+                            on_row(failure_row)
+                        checkpoint["total_variant_rows"] = len(all_variants)
+                        _update_checkpoint(run_id, checkpoint)
+                        continue
+
+                    variants = _extract_variant_table_rows(driver, recorder)
+                    if len(variants) != 6:
+                        reason = f"Expected 6 variant pairs, got {len(variants)}."
+                        screenshot, html = _capture_assist_failure_artifacts(
+                            driver,
+                            recorder,
+                            prefix=f"variant_pairs_missing_{st_value}_{probe_id}",
+                            reason=reason,
+                        )
+                        recorder.checker(
+                            "extract_variants",
+                            "FAIL",
+                            CHECKER_VARIANT_TABLE_MISSING,
+                            reason,
+                            client_id=probe_id,
+                            url=_normalize_text(getattr(driver, "current_url", "")),
+                            screenshot=screenshot,
+                            html=html,
+                        )
+                        failure_row = _build_failure_record(
+                            service_type_id=st_value,
+                            service_type_label=st_label,
+                            probe_client_id=probe_id,
+                            source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
+                            reason=reason,
+                        )
+                        all_variants.append(failure_row)
+                        _append_to_checkpoint_csv(run_id, [failure_row])
+                        if on_row:
+                            on_row(failure_row)
+                        checkpoint["total_variant_rows"] = len(all_variants)
+                        _update_checkpoint(run_id, checkpoint)
+                        continue
+
+                    variant_records: List[Dict[str, str]] = []
+                    for variant in variants:
+                        record = _build_variant_record(
+                            service_type_id=st_value,
+                            service_type_label=st_label,
+                            variant=variant,
+                            probe_client_id=probe_id,
+                            source_url=_normalize_text(getattr(driver, "current_url", "")),
+                        )
+                        variant_records.append(record)
+                        if on_row:
+                            on_row(record)
+
+                    _append_to_checkpoint_csv(run_id, variant_records)
+                    all_variants.extend(variant_records)
+                    checkpoint["total_variant_rows"] = len(all_variants)
+                    _update_checkpoint(run_id, checkpoint)
+                    service_pass = True
+                    _emit(f"  → extracted {len(variants)} variants (probe {probe_id})", on_progress)
+                except Exception as e:
+                    reason = f"Exception during Service Type extraction: {e}"
                     screenshot, html = _capture_assist_failure_artifacts(
                         driver,
                         recorder,
-                        prefix=f"service_type_select_fail_{st_value}",
+                        prefix=f"service_type_exception_{st_value}_{probe_id}",
                         reason=reason,
                     )
-                    recorder.checker(
-                        "service_type_select",
-                        "FAIL",
-                        CHECKER_SERVICE_TYPE_SELECT,
+                    recorder.event(
+                        "ERROR",
+                        "extract_service_type",
+                        "EXCEPTION",
                         reason,
+                        client_id=probe_id,
+                        context={"service_type": st_label},
+                    )
+                    recorder.checker(
+                        "extract_service_type",
+                        "FAIL",
+                        "CHK_SERVICE_TYPE_EXCEPTION",
+                        reason,
+                        client_id=probe_id,
                         url=_normalize_text(getattr(driver, "current_url", "")),
-                        selector="Service Type combobox",
                         screenshot=screenshot,
                         html=html,
                     )
-
                     failure_row = _build_failure_record(
                         service_type_id=st_value,
                         service_type_label=st_label,
-                        probe_client_id=preferred_probe,
+                        probe_client_id=probe_id,
                         source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
                         reason=reason,
                     )
@@ -1600,121 +1646,20 @@ def extract_service_type_variants(
                     _append_to_checkpoint_csv(run_id, [failure_row])
                     if on_row:
                         on_row(failure_row)
-
-                    failed_ids.add(st_value)
-                    checkpoint["failed_service_type_ids"] = list(failed_ids)
                     checkpoint["total_variant_rows"] = len(all_variants)
                     _update_checkpoint(run_id, checkpoint)
                     continue
 
-                # Extract variants from table
-                variants = _extract_variant_table_rows(driver, recorder)
-
-                if not variants:
-                    reason = "Variants table missing or empty for selected Service Type."
-                    screenshot, html = _capture_assist_failure_artifacts(
-                        driver,
-                        recorder,
-                        prefix=f"service_type_variants_missing_{st_value}",
-                        reason=reason,
-                    )
-                    recorder.checker(
-                        "extract_variants",
-                        "FAIL",
-                        CHECKER_VARIANT_TABLE_MISSING,
-                        reason,
-                        url=_normalize_text(getattr(driver, "current_url", "")),
-                        screenshot=screenshot,
-                        html=html,
-                    )
-
-                    failure_row = _build_failure_record(
-                        service_type_id=st_value,
-                        service_type_label=st_label,
-                        probe_client_id=preferred_probe,
-                        source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
-                        reason=reason,
-                    )
-                    all_variants.append(failure_row)
-                    _append_to_checkpoint_csv(run_id, [failure_row])
-                    if on_row:
-                        on_row(failure_row)
-
-                    failed_ids.add(st_value)
-                    checkpoint["failed_service_type_ids"] = list(failed_ids)
-                    checkpoint["total_variant_rows"] = len(all_variants)
-                    _update_checkpoint(run_id, checkpoint)
-                    continue
-
-                # Build full variant records
-                variant_records: List[Dict[str, str]] = []
-                for variant in variants:
-                    record = _build_variant_record(
-                        service_type_id=st_value,
-                        service_type_label=st_label,
-                        variant=variant,
-                        probe_client_id=preferred_probe,
-                        source_url=_normalize_text(getattr(driver, "current_url", "")),
-                    )
-                    variant_records.append(record)
-                    if on_row:
-                        on_row(record)
-
-                # Append to checkpoint CSV
-                _append_to_checkpoint_csv(run_id, variant_records)
-                all_variants.extend(variant_records)
-
-                # Update checkpoint
+            if service_pass:
                 processed_ids.add(st_value)
                 checkpoint["processed_service_type_ids"] = list(processed_ids)
-                checkpoint["total_variant_rows"] = len(all_variants)
-                _update_checkpoint(run_id, checkpoint)
-
-                _emit(
-                    f"  → extracted {len(variants)} variants",
-                    on_progress,
-                )
-
-            except Exception as e:
-                reason = f"Exception during Service Type extraction: {e}"
-                screenshot, html = _capture_assist_failure_artifacts(
-                    driver,
-                    recorder,
-                    prefix=f"service_type_exception_{st_value}",
-                    reason=reason,
-                )
-                recorder.event(
-                    "ERROR",
-                    "extract_service_type",
-                    "EXCEPTION",
-                    reason,
-                    context={"service_type": st_label},
-                )
-                recorder.checker(
-                    "extract_service_type",
-                    "FAIL",
-                    "CHK_SERVICE_TYPE_EXCEPTION",
-                    reason,
-                    url=_normalize_text(getattr(driver, "current_url", "")),
-                    screenshot=screenshot,
-                    html=html,
-                )
-                failure_row = _build_failure_record(
-                    service_type_id=st_value,
-                    service_type_label=st_label,
-                    probe_client_id=preferred_probe,
-                    source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
-                    reason=reason,
-                )
-                all_variants.append(failure_row)
-                _append_to_checkpoint_csv(run_id, [failure_row])
-                if on_row:
-                    on_row(failure_row)
+                if st_value in failed_ids:
+                    failed_ids.remove(st_value)
+            else:
                 failed_ids.add(st_value)
-                checkpoint["failed_service_type_ids"] = list(failed_ids)
-                checkpoint["total_variant_rows"] = len(all_variants)
-                _update_checkpoint(run_id, checkpoint)
-                continue
+            checkpoint["failed_service_type_ids"] = list(failed_ids)
+            checkpoint["total_variant_rows"] = len(all_variants)
+            _update_checkpoint(run_id, checkpoint)
 
         # Detect conflicts
         _emit("Detecting conflicts...", on_progress)
@@ -1735,7 +1680,7 @@ def extract_service_type_variants(
 
         # Conflicts CSV
         if conflict_variants:
-            conflict_cols = VARIANT_COLUMNS + ["Conflict Detail"]
+            conflict_cols = VARIANT_COLUMNS
             _write_csv(conflict_variants, conflict_cols, paths["conflicts_csv"])
 
         # Finalize checkpoint

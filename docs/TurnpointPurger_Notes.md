@@ -59,13 +59,14 @@ python importcsv.py --manifest my_clients.csv --all-clients
 python importcsv.py --discover-item-numbers --probe-client-id 56851 --headless
 python importcsv.py --merge-service-types    # legacy no-op (kept for compatibility)
 ```
-All discovery commands accept `--headless`. Use `--purgeable-url` when the tenant-specific clients page differs from the default `fld264=True` URL.
+All discovery commands accept `--headless`. `--probe-client-id` is required because variants extraction now depends on TP1 `Add Appointment` nested iframes (`appointment-edit.asp` -> inner Assist iframe with `has_parent=true`). Use `--purgeable-url` when the tenant-specific clients page differs from the default `fld264=True` URL.
 
 ## 6. Troubleshooting Cheatsheet
 - **Purgeable click fails (404):** Set `PURGEABLE_CLIENTS_URL` to the known `clients.asp` URL (with `fld264=True`) or pass `--purgeable-url`.  
 - **Excel icon hidden:** ensure you’re on `clients.asp` not the dashboard; `_trigger_excel_download` looks for any `<a>` with `onclick='generateXL...'`.  
 - **Atlas stays blank:** run `Collect Package Manifest` (creates `package_manifest.csv`), then `Refresh Client Atlas`.  
 - **Bundle buttons unresponsive:** they are hidden until credentials are set. After setting, click `Bundle Download`, choose “All Packages” or a single package; watch the log panel for per-package outcomes.
+- **Discovery opens Assist but variants are empty:** direct `assist.turnpoint.co/appointments/new` context is unsupported; ensure route goes through TP1 client details `Appointments` -> `Add Appointment` with the nested iframe handoff.
 - **Service Type variants extraction fails early:** inspect `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/` for `events.jsonl`, `checkers.csv`, and HTML/PNG/console artifacts. Diagnostics are written even on early route/readiness failure.
 
 ## 7. UML Diagram

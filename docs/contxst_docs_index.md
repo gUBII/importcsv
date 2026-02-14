@@ -26,6 +26,7 @@ This set reflects the implemented code as of today, including:
 - GUI entrypoint: `turnpoint_purger_ui.py` (`turnpoint-purger-gui`).
 - New discovery module: `appointment_item_discovery.py`.
 - Variants extraction runbook: `docs/service_type_variants_runbook.md`.
+- Variants extraction route contract: TP1 `Add Appointment` nested iframe path is required; direct Assist URL context is unsupported.
 - Core archives: `~/PurgedClients`, `~/PurgedWorker`, PDCC root, and `~/LineItemRates`.
 - Variant extraction diagnostics:
   - `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/events.jsonl`

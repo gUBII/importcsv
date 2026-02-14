@@ -3,10 +3,7 @@
 import csv
 import json
 import sys
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
-
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,9 +23,11 @@ class _FakeDriver:
 
     def __init__(self, tmp_path: Path = None):
         self.current_url = "https://assist.turnpoint.co/appointments/new"
+        self.title = "New Appointment - Turnpoint Assist"
         self.page_source = "<html><body>appointment form</body></html>"
         self._tmp_path = tmp_path
         self._elements = {}
+        self.switch_to = _FakeSwitch(self)
 
     def quit(self):
         pass
@@ -38,6 +37,8 @@ class _FakeDriver:
 
     def find_element(self, by, value):
         """Mock find_element."""
+        if (by, value) == ("tag name", "body"):
+            return _FakeElement("appointment body")
         if (by, value) in self._elements:
             return self._elements[(by, value)]
         raise RuntimeError(f"Element not found: {by}:{value}")
@@ -54,15 +55,37 @@ class _FakeDriver:
 
     def execute_script(self, script, *args):
         """Mock execute_script."""
-        pass
+        if "/ hour" in script:
+            return "/ hour"
+        if "$" in script and args:
+            prefix = args[0].get_attribute("data-cy").replace("_rate-input", "")
+            return discovery.VARIANT_LABEL_FALLBACK.get(prefix, "")
+        return None
 
     def save_screenshot(self, path):
         """Mock screenshot."""
         Path(path).write_bytes(b"fake-png")
 
+    def get_log(self, _kind):
+        return []
+
     def set_element(self, by, value, elem):
         """Set mock element for find_element."""
         self._elements[(by, value)] = elem
+
+
+class _FakeSwitch:
+    """Mock switch_to helper."""
+
+    def __init__(self, driver):
+        self.driver = driver
+        self.last_frame = None
+
+    def default_content(self):
+        self.last_frame = None
+
+    def frame(self, frame_elem):
+        self.last_frame = frame_elem
 
 
 class _FakeElement:
@@ -114,7 +137,7 @@ class _FakeInput(_FakeElement):
 
     def send_keys(self, keys):
         self._sent_keys.append(keys)
-        if keys != "\ue00d":  # ESCAPE key
+        if keys not in ("\ue00d", "\ue007"):  # ESCAPE / ENTER
             self._value += str(keys)
 
 
@@ -226,48 +249,48 @@ def test_diagnostics_recorder_save_writes_empty_checkers_file(tmp_path):
 
 
 def test_extract_variant_table_rows_success(fake_driver, tmp_path):
-    """Test successful variant table extraction."""
+    """Test extraction via the six fixed data-cy rate/code pairs."""
     recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
 
-    # Create mock table with rows
-    # Cell attributes are important for extraction
-    row1 = _FakeElement()
-    row1._children = [
-        _FakeElement("Weekday Daytime", attributes={}),
-        _FakeElement("200.00", attributes={"value": "200.00"}),
-        _FakeElement("01_111", attributes={"value": "01_111"}),
-        _FakeElement("per hour", attributes={}),
-    ]
-
-    row2 = _FakeElement()
-    row2._children = [
-        _FakeElement("Weekday Evening", attributes={}),
-        _FakeElement("250.00", attributes={"value": "250.00"}),
-        _FakeElement("01_112", attributes={"value": "01_112"}),
-    ]
-
-    table = _FakeElement()
-    table._children = [row1, row2]
-
-    # Mock driver to return table via fallback CSS selector
-    fake_driver._elements[("css selector", "table")] = table
+    expected = {
+        "day": ("78.81", "01_803_0115_1_1"),
+        "eve": ("78.81", "01_803_0115_1_1"),
+        "night": ("78.81", "01_803_0115_1_1"),
+        "saturday": ("98.83", "01_804_0115_1_1"),
+        "sunday": ("127.43", "01_805_0115_1_1"),
+        "ph": ("156.03", "01_806_0115_1_1"),
+    }
+    for prefix, (rate, code) in expected.items():
+        fake_driver.set_element(
+            "css selector",
+            f"input[data-cy='{prefix}_rate-input']",
+            [_FakeInput(value=rate, attributes={"data-cy": f"{prefix}_rate-input"})],
+        )
+        fake_driver.set_element(
+            "css selector",
+            f"input[data-cy='{prefix}_code-input']",
+            [_FakeInput(value=code, attributes={"data-cy": f"{prefix}_code-input"})],
+        )
 
     # Extract
     variants = discovery._extract_variant_table_rows(fake_driver, recorder)
 
     # Verify
-    assert len(variants) == 2
-    assert variants[0]["Service Variant Label"] == "Weekday Daytime"
-    assert variants[0]["Rate"] == "200.00"
-    assert variants[0]["Code"] == "01_111"  # Normalized (underscores preserved)
-    assert variants[1]["Service Variant Label"] == "Weekday Evening"
+    assert len(variants) == 6
+    by_label = {row["Service Variant Label"]: row for row in variants}
+    assert by_label["Weekday Daytime/Individual Code"]["Rate"] == "78.81"
+    assert by_label["Weekday Daytime/Individual Code"]["Code"] == "01_803_0115_1_1"
+    assert by_label["Saturday"]["Rate"] == "98.83"
+    assert by_label["Sunday"]["Rate"] == "127.43"
+    assert by_label["Public Holiday"]["Rate"] == "156.03"
+    assert all(row["Unit"] == "/ hour" for row in variants)
 
 
 def test_extract_variant_table_missing(fake_driver, tmp_path):
-    """Test handling when variant table is missing."""
+    """Test handling when required input pairs are missing."""
     recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
 
-    # Don't set any mock table
+    # Missing fixed 6-pair inputs should fail extraction
     variants = discovery._extract_variant_table_rows(fake_driver, recorder)
 
     # Verify empty result and diagnostic
@@ -284,19 +307,16 @@ def test_extract_variant_table_missing(fake_driver, tmp_path):
 
 
 def test_select_assist_option_full_label(fake_driver, tmp_path):
-    """Test option selection using full label strategy."""
+    """Test option selection using type+enter against primary XPath input."""
     recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
 
-    # Create mock combobox and options
-    input_elem = _FakeInput(attributes={"role": "combobox", "aria-haspopup": "true"})
-    option_elem = _FakeElement("Support Work", attributes={"data-value": "7358"})
-
+    input_elem = _FakeInput(attributes={"role": "combobox", "aria-expanded": "false"})
     fake_driver.set_element(
-        "css selector",
-        "input[role='combobox'][aria-haspopup='true']",
-        input_elem,
+        "xpath",
+        discovery.SERVICE_TYPE_INPUT_XPATH,
+        [input_elem],
     )
-    fake_driver.set_element("css selector", "[role='option']", [option_elem])
+    fake_driver.set_element("css selector", discovery.SERVICE_TYPE_LISTBOX_CSS, [_FakeElement("listbox")])
 
     # Try selection
     success = discovery._select_assist_option_with_retries(
@@ -313,7 +333,7 @@ def test_select_assist_option_all_fail(fake_driver, tmp_path):
     """Test when all selection strategies fail."""
     recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
 
-    # Don't set any mock elements, so selection will fail
+    # No Service Type input available
     success = discovery._select_assist_option_with_retries(
         fake_driver,
         "7358",
@@ -329,6 +349,39 @@ def test_select_assist_option_all_fail(fake_driver, tmp_path):
     with open(tmp_path / "events.jsonl") as f:
         events = [json.loads(line) for line in f]
     assert any("SELECT_FAILED" in e["code"] for e in events)
+
+
+def test_switch_to_variants_capable_editor_nested_iframes(fake_driver, tmp_path, monkeypatch):
+    """Switch helper should navigate two-level iframe contract and pass capability gate."""
+    recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
+    outer_iframe = _FakeElement(attributes={"src": "https://tp1.com.au/appointment-edit.asp?NavShow=none"})
+    inner_iframe = _FakeElement(attributes={"src": "https://assist.turnpoint.co/appointments/new?has_parent=true&client_id=92108&view_type=feature"})
+    reload_anchor = _FakeElement(attributes={"data-cy": "service_type_id-reload"})
+    service_input = _FakeInput(attributes={"role": "combobox", "aria-expanded": "false"})
+    day_rate = _FakeInput(value="78.81", attributes={"data-cy": "day_rate-input"})
+    day_code = _FakeInput(value="01_803_0115_1_1", attributes={"data-cy": "day_code-input"})
+
+    fake_driver.set_element("css selector", discovery.OUTER_APPOINTMENT_IFRAME_CSS, [outer_iframe])
+    fake_driver.set_element("css selector", discovery.INNER_ASSIST_IFRAME_CSS, [inner_iframe])
+    fake_driver.set_element("css selector", discovery.SERVICE_TYPE_RELOAD_CSS, [reload_anchor])
+    fake_driver.set_element("xpath", discovery.SERVICE_TYPE_INPUT_XPATH, [service_input])
+    fake_driver.set_element("css selector", "input[data-cy='day_rate-input']", [day_rate])
+    fake_driver.set_element("css selector", "input[data-cy='day_code-input']", [day_code])
+
+    monkeypatch.setattr(discovery, "_click_add_appointment", lambda _driver: True)
+    monkeypatch.setattr(discovery, "_select_service_type_option", lambda *args, **kwargs: True)
+
+    class _Wait:
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def until(self, _cond):
+            return True
+
+    monkeypatch.setattr(discovery, "WebDriverWait", _Wait)
+    ok = discovery._switch_to_variants_capable_editor(fake_driver, "92108", recorder)
+    assert ok is True
+    assert fake_driver.switch_to.last_frame == inner_iframe
+    assert any(c["code"] == discovery.CHECKER_VARIANTS_EDITOR_ROUTE and c["status"] == "PASS" for c in recorder.checkers)
 
 
 # =============================================================================
@@ -605,20 +658,45 @@ def test_variant_column_schema():
     expected_columns = [
         "Parent Service Type ID",
         "Parent Service Type Label",
+        "Parent Service Type",
+        "Service Type ID",
         "Service Variant Label",
         "Rate",
         "Rate (Raw)",
         "Code",
         "Code (Raw)",
+        "Item Number",
         "Unit",
         "Status",
         "Error Reason",
         "Conflict",
+        "Conflict Detail",
         "Probe Client ID",
         "Source URL",
         "Captured At (UTC)",
     ]
     assert discovery.VARIANT_COLUMNS == expected_columns
+
+
+def test_build_variant_record_includes_truthview_alias_fields():
+    """Variant output rows include alias fields used by TruthView import."""
+    row = discovery._build_variant_record(
+        service_type_id="7358",
+        service_type_label="(SIL) Active Night-Time",
+        variant={
+            "Service Variant Label": "Weekday Evening",
+            "Rate": "78.81",
+            "Rate (Raw)": "78.81",
+            "Code": "01_803_0115_1_1",
+            "Code (Raw)": "01_803_0115_1_1",
+            "Unit": "/ hour",
+        },
+        probe_client_id="92108",
+        source_url="https://assist.turnpoint.co/appointments/new?has_parent=true",
+    )
+    assert row["Parent Service Type"] == row["Parent Service Type Label"]
+    assert row["Service Type ID"] == row["Parent Service Type ID"]
+    assert row["Item Number"] == row["Code"]
 
 
 def test_discover_appointment_item_numbers_forwards_smoke_kwargs(monkeypatch):

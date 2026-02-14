@@ -43,9 +43,10 @@ This document maps each important module to its real responsibilities, major fun
 ## `appointment_item_discovery.py` (Service Type variants truth extraction)
 
 ### What it owns
-- Assist/TP1 appointment-editor opening with strict readiness checks.
-- Locator fallback layer for Service Type combobox, options list, and variants table.
-- Variant row extraction (`Service`, `Rate`, `Code`, `Unit`) with raw + normalized fields.
+- TP1 Add Appointment nested-iframe entry (`appointment-edit.asp` -> inner Assist `/appointments/new?...has_parent=true`) with strict capability gate.
+- Service Type combobox selection using primary XPath + listbox/option fallback.
+- Fixed six-pair variant extraction (`day/eve/night/saturday/sunday/ph`) via stable `data-cy` inputs.
+- Variant row extraction (`Service`, `Rate`, `Code`, `Unit`) with raw + normalized fields plus TruthView aliases.
 - Continue-on-error per Service Type (`Status=FAIL` rows + artifacts, then continue).
 - Structured diagnostics (`events.jsonl`, `checkers.csv`) with HTML/PNG/console failure artifacts.
 - Checkpointing and resumable extraction under LineItemRates checkpoints.
@@ -54,9 +55,14 @@ This document maps each important module to its real responsibilities, major fun
 - Extraction pipeline:
   - `discover_appointment_item_numbers(...)`
   - `_open_assist_appointments_new(...)`
-  - `_locate_service_type_combobox(...)`
+  - `_switch_to_variants_capable_editor(...)`
+  - `_find_service_type_input(...)`
+  - `_select_service_type_option(...)`
   - `_select_assist_option_with_retries(...)`
+  - `_read_variant_fingerprint(...)`
+  - `_wait_for_fingerprint_change(...)`
   - `_extract_variant_table_rows(...)`
+  - `_build_variant_record(...)`
   - `_load_service_types_from_reference_index(...)`
   - `extract_service_type_variants(...)`
 - Legacy compatibility:
@@ -69,11 +75,17 @@ This document maps each important module to its real responsibilities, major fun
   - `~/LineItemRates/ServiceTypeTruth/variants/latest/ServiceTypeVariants_latest.xlsx`
   - `~/LineItemRates/ServiceTypeTruth/variants/snapshots/ServiceTypeVariants_<run_id>.csv/.xlsx`
   - Optional conflicts file: `ServiceTypeVariants_conflicts_<run_id>.csv`
+- Per-row schema includes aliases used by TruthView import:
+  - `Parent Service Type`
+  - `Service Type ID`
+  - `Item Number`
+  - conflict fields: `Conflict`, `Conflict Detail`
 - Checkpoints:
   - `~/LineItemRates/ServiceTypeTruth/variants/checkpoints/checkpoint_<run_id>.json`
   - `~/LineItemRates/ServiceTypeTruth/variants/checkpoints/variants_append_<run_id>.csv`
 - Diagnostics per run under:
   - `~/LineItemRates/ServiceTypeTruth/variants/diagnostics/<run_id>/`
+- Diagnostics persistence is in `finally` to avoid early-failure evidence loss.
 
 ## `turnpoint_purger_ui.py` (Tkinter app)
 
