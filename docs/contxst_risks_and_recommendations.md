@@ -2,10 +2,9 @@
 
 ## High-priority observations
 
-### 1) UI module appears to use `os.getenv` without importing `os`
-- In `turnpoint_purger_ui.py`, Nexis credential defaults call `os.getenv(...)`.
-- The module imports many libraries, but `import os` is not present at the top.
-- Risk: GUI startup failure with `NameError` when initializing those fields.
+### 1) Historical UI import issue has been resolved
+- `turnpoint_purger_ui.py` now includes `import os` while using `os.getenv(...)`.
+- There is no active `NameError` risk from this item at present.
 
 ### 2) Version metadata is inconsistent
 - `pyproject.toml` declares `3.0.1`.
@@ -49,7 +48,7 @@
 ## Recommendations by implementation horizon
 
 ### Immediate
-1. Add `import os` in `turnpoint_purger_ui.py` if missing.
+1. Keep import-sanity checks in CI/lint so missing-import regressions are caught early.
 2. Align version string source so UI, package metadata, and docs match.
 3. Remove hardcoded default password and source it from secure config.
 
