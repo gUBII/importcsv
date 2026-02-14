@@ -466,6 +466,162 @@ def test_checkpoint_resume_logic(tmp_path, monkeypatch):
     assert "7360" not in processed_ids
 
 
+def _mock_variant_paths(tmp_path):
+    """Build deterministic variant path map rooted in tmp_path."""
+    def _paths(run_id):
+        run_root = tmp_path / run_id
+        return {
+            "checkpoint_json": run_root / "checkpoint.json",
+            "checkpoint_append_csv": run_root / "checkpoint_append.csv",
+            "diagnostics_dir": run_root / "diagnostics",
+            "latest_csv": run_root / "latest.csv",
+            "latest_xlsx": run_root / "latest.xlsx",
+            "snapshot_csv": run_root / "snapshot.csv",
+            "snapshot_xlsx": run_root / "snapshot.xlsx",
+            "conflicts_csv": run_root / "conflicts.csv",
+        }
+
+    return _paths
+
+
+def _sample_variant_rows():
+    """Return six complete variant rows used by extraction mocks."""
+    return [
+        {"Service Variant Label": "Weekday Daytime/Individual Code", "Rate": "78.81", "Rate (Raw)": "78.81", "Code": "01_803_0115_1_1", "Code (Raw)": "01_803_0115_1_1", "Unit": "/ hour"},
+        {"Service Variant Label": "Weekday Evening", "Rate": "78.81", "Rate (Raw)": "78.81", "Code": "01_803_0115_1_1", "Code (Raw)": "01_803_0115_1_1", "Unit": "/ hour"},
+        {"Service Variant Label": "Weekday Night", "Rate": "78.81", "Rate (Raw)": "78.81", "Code": "01_803_0115_1_1", "Code (Raw)": "01_803_0115_1_1", "Unit": "/ hour"},
+        {"Service Variant Label": "Saturday", "Rate": "98.83", "Rate (Raw)": "98.83", "Code": "01_804_0115_1_1", "Code (Raw)": "01_804_0115_1_1", "Unit": "/ hour"},
+        {"Service Variant Label": "Sunday", "Rate": "127.43", "Rate (Raw)": "127.43", "Code": "01_805_0115_1_1", "Code (Raw)": "01_805_0115_1_1", "Unit": "/ hour"},
+        {"Service Variant Label": "Public Holiday", "Rate": "156.03", "Rate (Raw)": "156.03", "Code": "01_806_0115_1_1", "Code (Raw)": "01_806_0115_1_1", "Unit": "/ hour"},
+    ]
+
+
+def test_resume_skips_previously_failed_service_types_unless_force_refresh(tmp_path, monkeypatch):
+    """Resume should skip attempted+failed service types; force_refresh should re-attempt."""
+    fake_driver = _FakeDriver(tmp_path)
+    checkpoint = {
+        "run_id": "RESUME_RUN",
+        "started_at": discovery._utc_now(),
+        "probe_clients": ["92108"],
+        "smoke_mode": False,
+        "processed_service_type_ids": ["7358"],
+        "failed_service_type_ids": ["7358"],
+        "total_variant_rows": 1,
+        "status": "in_progress",
+    }
+    existing_failure_row = discovery._build_failure_record(
+        service_type_id="7358",
+        service_type_label="(SIL) Active Night-Time",
+        probe_client_id="92108",
+        source_url="https://tp1.com.au/client-details.asp?eid=92108",
+        reason="prior failure",
+    )
+
+    select_calls = []
+    append_calls = []
+
+    monkeypatch.setattr(line_item_paths, "get_variant_paths", _mock_variant_paths(tmp_path))
+    monkeypatch.setattr(line_item_paths, "make_run_id", lambda _tag: "NEW_RUN")
+    monkeypatch.setattr(line_item_paths, "ensure_structure", lambda: None)
+    monkeypatch.setattr(line_item_paths, "downloads_dir", lambda: tmp_path)
+    monkeypatch.setattr(discovery, "ensure_credentials", lambda: None)
+    monkeypatch.setattr(discovery, "build_chrome_driver", lambda **_kwargs: fake_driver)
+    monkeypatch.setattr(discovery, "login", lambda _driver: None)
+    monkeypatch.setattr(discovery, "_open_assist_appointments_new", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(discovery, "_find_latest_resumable_checkpoint", lambda *_args, **_kwargs: dict(checkpoint))
+    monkeypatch.setattr(discovery, "_load_checkpoint_rows", lambda _run_id: [dict(existing_failure_row)])
+    monkeypatch.setattr(discovery, "_load_service_types_from_reference_index", lambda _rec: {"7358": "(SIL) Active Night-Time"})
+    monkeypatch.setattr(discovery, "_collect_assist_options", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(discovery, "_select_assist_option_with_retries", lambda *_args, **_kwargs: select_calls.append("called") or True)
+    monkeypatch.setattr(discovery, "_wait_for_fingerprint_change", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(discovery, "_wait_for_variant_values_ready", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(discovery, "_extract_variant_table_rows", lambda *_args, **_kwargs: _sample_variant_rows())
+    monkeypatch.setattr(discovery, "_detect_conflicts", lambda rows: (rows, []))
+    monkeypatch.setattr(discovery, "_append_to_checkpoint_csv", lambda _run_id, rows: append_calls.append(len(rows)))
+    monkeypatch.setattr(discovery, "_write_csv", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(discovery, "_write_xlsx", lambda _rows, _fields, path: path)
+    monkeypatch.setattr(discovery, "_apply_xlsx_merged_cells", lambda *_args, **_kwargs: None)
+
+    resumed = discovery.extract_service_type_variants(
+        headless=True,
+        probe_client_ids=["92108"],
+        resume=True,
+        force_refresh=False,
+        smoke_mode=False,
+    )
+    assert select_calls == []  # skipped because already attempted
+    assert append_calls == []  # no new rows appended
+    assert resumed["processed_service_types"] == 1
+    assert resumed["failed_service_types"] == 1
+    assert resumed["total_variant_rows"] == 1
+
+    refreshed = discovery.extract_service_type_variants(
+        headless=True,
+        probe_client_ids=["92108"],
+        resume=True,
+        force_refresh=True,
+        smoke_mode=False,
+    )
+    assert len(select_calls) == 1  # re-attempted under force_refresh
+    assert append_calls == [6]
+    assert refreshed["processed_service_types"] == 1
+    assert refreshed["failed_service_types"] == 0
+    assert refreshed["total_variant_rows"] == 6
+
+
+def test_resume_does_not_duplicate_checkpoint_rows_for_previously_attempted_types(tmp_path, monkeypatch):
+    """Resume should keep checkpoint rows stable when all queued types were already attempted."""
+    fake_driver = _FakeDriver(tmp_path)
+    checkpoint = {
+        "run_id": "RESUME_RUN",
+        "started_at": discovery._utc_now(),
+        "probe_clients": ["92108"],
+        "smoke_mode": False,
+        "processed_service_type_ids": ["9001"],
+        "failed_service_type_ids": ["9001"],
+        "total_variant_rows": 1,
+        "status": "in_progress",
+    }
+    existing_failure_row = discovery._build_failure_record(
+        service_type_id="9001",
+        service_type_label="Existing Failed Type",
+        probe_client_id="92108",
+        source_url="https://tp1.com.au/client-details.asp?eid=92108",
+        reason="prior failure",
+    )
+
+    append_rows = []
+    monkeypatch.setattr(line_item_paths, "get_variant_paths", _mock_variant_paths(tmp_path))
+    monkeypatch.setattr(line_item_paths, "make_run_id", lambda _tag: "NEW_RUN")
+    monkeypatch.setattr(line_item_paths, "ensure_structure", lambda: None)
+    monkeypatch.setattr(line_item_paths, "downloads_dir", lambda: tmp_path)
+    monkeypatch.setattr(discovery, "ensure_credentials", lambda: None)
+    monkeypatch.setattr(discovery, "build_chrome_driver", lambda **_kwargs: fake_driver)
+    monkeypatch.setattr(discovery, "login", lambda _driver: None)
+    monkeypatch.setattr(discovery, "_open_assist_appointments_new", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(discovery, "_find_latest_resumable_checkpoint", lambda *_args, **_kwargs: dict(checkpoint))
+    monkeypatch.setattr(discovery, "_load_checkpoint_rows", lambda _run_id: [dict(existing_failure_row)])
+    monkeypatch.setattr(discovery, "_load_service_types_from_reference_index", lambda _rec: {"9001": "Existing Failed Type"})
+    monkeypatch.setattr(discovery, "_collect_assist_options", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(discovery, "_append_to_checkpoint_csv", lambda _run_id, rows: append_rows.extend(rows))
+    monkeypatch.setattr(discovery, "_write_csv", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(discovery, "_write_xlsx", lambda _rows, _fields, path: path)
+    monkeypatch.setattr(discovery, "_apply_xlsx_merged_cells", lambda *_args, **_kwargs: None)
+
+    result = discovery.extract_service_type_variants(
+        headless=True,
+        probe_client_ids=["92108"],
+        resume=True,
+        force_refresh=False,
+        smoke_mode=False,
+    )
+
+    assert append_rows == []  # no duplicate append on resume
+    assert result["total_variant_rows"] == 1
+    assert result["processed_service_types"] == 1
+    assert result["failed_service_types"] == 1
+
+
 # =============================================================================
 # TESTS: CONFLICT DETECTION
 # =============================================================================

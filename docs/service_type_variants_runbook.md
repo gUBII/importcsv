@@ -56,6 +56,15 @@ PY
 
 If the label is omitted or not found, smoke mode uses the first Service Type from the reference index.
 
+## Resume semantics
+
+- `resume=True` + `force_refresh=False`:
+  - auto-resumes the latest `status=in_progress` checkpoint for matching probe clients/mode
+  - treats `processed_service_type_ids` as "attempted" (both previous PASS and FAIL), so resume does not re-attempt prior failures
+- `force_refresh=True`:
+  - bypasses auto-resume and starts a fresh run id
+  - re-attempts all queued Service Types (use this when you intentionally want to retry failures)
+
 ## Selector maintenance (using ATLAS facts)
 
 Current selector priorities:

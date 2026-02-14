@@ -1886,9 +1886,11 @@ def extract_service_type_variants(
                     _update_checkpoint(run_id, checkpoint)
                     continue
 
+            # Mark this Service Type as attempted regardless of PASS/FAIL so
+            # resume does not duplicate rows by re-attempting prior failures.
+            processed_ids.add(st_value)
+            checkpoint["processed_service_type_ids"] = list(processed_ids)
             if service_pass:
-                processed_ids.add(st_value)
-                checkpoint["processed_service_type_ids"] = list(processed_ids)
                 if st_value in failed_ids:
                     failed_ids.remove(st_value)
             else:
