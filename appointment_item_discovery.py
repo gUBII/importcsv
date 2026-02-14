@@ -19,15 +19,13 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-from urllib.parse import parse_qs
 
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import Select
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 from importcsv import (
-    ARCHIVE_ROOT,
     BASE_URL,
     build_chrome_driver,
     ensure_credentials,
@@ -35,7 +33,6 @@ from importcsv import (
     log_message,
 )
 import line_item_paths
-from selenium_helpers import wait_for
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 
@@ -62,6 +59,8 @@ VARIANT_COLUMNS = [
     "Code",
     "Code (Raw)",
     "Unit",
+    "Status",
+    "Error Reason",
     "Conflict",
     "Probe Client ID",
     "Source URL",
@@ -109,6 +108,52 @@ CHECKER_VARIANT_TABLE_EXTRACT = "CHK_VARIANT_TABLE_EXTRACT"
 CHECKER_VARIANT_TABLE_MISSING = "CHK_VARIANT_TABLE_MISSING"
 CHECKER_VARIANT_TABLE_EMPTY = "CHK_VARIANT_TABLE_EMPTY"
 
+ASSIST_DIRECT_URL = "https://assist.turnpoint.co/appointments/new"
+
+SERVICE_TYPE_LOCATOR_STRATEGIES: List[Tuple[str, str, str]] = [
+    ("data-testid", By.CSS_SELECTOR, "[data-testid='service-type-combobox']"),
+    ("name", By.CSS_SELECTOR, "input[name='service_type_id'][role='combobox']"),
+    ("aria-label", By.CSS_SELECTOR, "input[aria-label='Service Type'][role='combobox']"),
+    (
+        "role-aria",
+        By.CSS_SELECTOR,
+        "input[role='combobox'][aria-haspopup='true']",
+    ),
+    (
+        "label-adjacent-xpath",
+        By.XPATH,
+        "//label[contains(normalize-space(.), 'Service Type')]/following::input[@role='combobox'][1]",
+    ),
+]
+
+SERVICE_TYPE_OPTION_LOCATOR_STRATEGIES: List[Tuple[str, str, str]] = [
+    ("role-option", By.CSS_SELECTOR, "[role='option']"),
+    ("react-option", By.CSS_SELECTOR, ".react-select__option"),
+    ("list-item-option", By.XPATH, "//li[contains(@class, 'option')]"),
+]
+
+VARIANT_TABLE_LOCATOR_STRATEGIES: List[Tuple[str, str, str]] = [
+    ("data-testid", By.CSS_SELECTOR, "[data-testid='service-variants-table']"),
+    ("named-table", By.CSS_SELECTOR, "table[aria-label*='Service']"),
+    (
+        "table-with-service-header",
+        By.XPATH,
+        "//table[.//th[contains(normalize-space(.), 'Service')]]",
+    ),
+    (
+        "first-table-after-service-type",
+        By.XPATH,
+        "//label[contains(normalize-space(.), 'Service Type')]/following::table[1]",
+    ),
+    ("fallback-any-table", By.CSS_SELECTOR, "table"),
+]
+
+MODAL_DISMISS_BUTTON_XPATH = (
+    "//button[normalize-space()='Close' or normalize-space()='Dismiss' or normalize-space()='OK']"
+    " | //button[contains(normalize-space(.), 'close') or contains(normalize-space(.), 'Dismiss')]"
+    " | //div[@role='dialog']//button"
+)
+
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
@@ -150,9 +195,44 @@ def _coerce_rate_text(value: str) -> str:
     """Extract and normalize numeric rate."""
     if not value:
         return ""
-    # Extract leading numeric part (handles "$100.50" → "100.50")
-    match = re.search(r"[\d.]+", str(value).strip())
-    return match.group() if match else str(value).strip()
+    text = _normalize_text(value)
+    matches = re.findall(r"\d[\d,]*\.?\d*", text)
+    if not matches:
+        return text
+    return matches[0].replace(",", "")
+
+
+def _normalize_code_text(value: str) -> str:
+    """Normalize item code while preserving underscore separators."""
+    if not value:
+        return ""
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "", _normalize_text(value))
+    return cleaned.upper()
+
+
+def _split_rate_and_unit(value: str, unit_hint: str = "") -> Tuple[str, str]:
+    """Split a rate cell into normalized numeric rate and raw unit text."""
+    raw = _normalize_text(value)
+    rate = _coerce_rate_text(raw)
+    unit = _normalize_text(unit_hint)
+    if not unit and "/" in raw:
+        unit = _normalize_text(raw[raw.index("/") :])
+    return rate, unit
+
+
+def _is_interactable(element) -> bool:
+    """Best-effort interactable check that also works with test doubles."""
+    if element is None:
+        return False
+    try:
+        displayed = element.is_displayed()
+    except Exception:
+        displayed = True
+    try:
+        enabled = element.is_enabled()
+    except Exception:
+        enabled = True
+    return bool(displayed and enabled)
 
 
 def _sanitize_excel_text(value) -> Tuple[str, int]:
@@ -172,12 +252,18 @@ def _sanitize_excel_text(value) -> Tuple[str, int]:
 class DiagnosticsRecorder:
     """Record diagnostics events and artifacts."""
 
-    def __init__(self, run_id: str, output_dir: Path):
+    def __init__(
+        self,
+        run_id: str,
+        output_dir: Path,
+        on_event: EventCallback = None,
+    ):
         self.run_id = run_id
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.events: List[Dict[str, str]] = []
         self.checkers: List[Dict[str, str]] = []
+        self._event_callback = on_event
 
     def event(
         self,
@@ -206,6 +292,11 @@ class DiagnosticsRecorder:
             "context_json": _safe_json(context) if context else "",
         }
         self.events.append(event_dict)
+        if self._event_callback:
+            try:
+                self._event_callback(dict(event_dict))
+            except Exception:
+                pass
 
     def checker(
         self,
@@ -241,19 +332,19 @@ class DiagnosticsRecorder:
         """Save events and checkers to disk."""
         # Save events as JSONL
         events_path = self.output_dir / "events.jsonl"
-        with open(events_path, "w") as f:
+        with open(events_path, "w", encoding="utf-8") as f:
             for event in self.events:
                 f.write(json.dumps(event) + "\n")
 
         # Save checkers as CSV
         checkers_path = self.output_dir / "checkers.csv"
-        if self.checkers:
-            with open(checkers_path, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=CHECKER_FIELDS)
-                writer.writeheader()
+        with open(checkers_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CHECKER_FIELDS)
+            writer.writeheader()
+            if self.checkers:
                 writer.writerows(self.checkers)
 
-    def capture_screenshot(self, driver, name: str) -> Path:
+    def capture_screenshot(self, driver, name: str) -> Optional[Path]:
         """Capture screenshot and save."""
         path = self.output_dir / f"{name}.png"
         try:
@@ -262,7 +353,7 @@ class DiagnosticsRecorder:
         except Exception:
             return None
 
-    def capture_html(self, driver, name: str) -> Path:
+    def capture_html(self, driver, name: str) -> Optional[Path]:
         """Capture page HTML and save."""
         path = self.output_dir / f"{name}.html"
         try:
@@ -328,33 +419,23 @@ def _apply_xlsx_merged_cells(xlsx_path: Path):
         wb = load_workbook(xlsx_path)
         ws = wb.active
 
-        # Group rows by Parent Service Type ID (column A)
-        grouped = {}
-        for row_idx in range(2, ws.max_row + 1):
-            parent_id = ws.cell(row_idx, 1).value
-            if parent_id:
-                if parent_id not in grouped:
-                    grouped[parent_id] = []
-                grouped[parent_id].append(row_idx)
-
-        # Merge Parent columns (A and B) for rows with same parent
-        for parent_id, row_indices in grouped.items():
-            if len(row_indices) > 1:
-                start_row = min(row_indices)
-                end_row = max(row_indices)
-                # Merge Parent ID column
-                try:
-                    ws.merge_cells(f"A{start_row}:A{end_row}")
-                except Exception:
-                    pass
-                # Merge Parent Label column
-                try:
-                    ws.merge_cells(f"B{start_row}:B{end_row}")
-                except Exception:
-                    pass
-                # Center align merged cells
-                ws.cell(start_row, 1).alignment = Alignment(vertical="center")
-                ws.cell(start_row, 2).alignment = Alignment(vertical="center")
+        # Merge contiguous parent groups in columns A and B.
+        group_start = None
+        current_parent = None
+        for row_idx in range(2, ws.max_row + 2):
+            parent_id = ws.cell(row_idx, 1).value if row_idx <= ws.max_row else None
+            if parent_id != current_parent:
+                if current_parent and group_start and row_idx - group_start > 1:
+                    end_row = row_idx - 1
+                    try:
+                        ws.merge_cells(f"A{group_start}:A{end_row}")
+                        ws.merge_cells(f"B{group_start}:B{end_row}")
+                    except Exception:
+                        pass
+                    ws.cell(group_start, 1).alignment = Alignment(vertical="center")
+                    ws.cell(group_start, 2).alignment = Alignment(vertical="center")
+                current_parent = parent_id
+                group_start = row_idx if parent_id else None
 
         # Freeze header row
         ws.freeze_panes = "A2"
@@ -426,167 +507,451 @@ def _append_to_checkpoint_csv(run_id: str, rows: List[Dict[str, str]]):
 # =============================================================================
 
 
-def _open_assist_appointments_new(driver, recorder: DiagnosticsRecorder) -> bool:
-    """Navigate to Assist /appointments/new with enhanced diagnostics."""
+def _switch_to_default_content(driver) -> None:
+    """Switch to top-level document when Selenium context supports it."""
     try:
-        url = "https://assist.turnpoint.co/appointments/new"
-        driver.get(url)
-        time.sleep(3)  # Increased wait for React app to render
-
-        # Capture diagnostics
-        actual_url = driver.current_url
-        page_title = driver.title
-        body_text = driver.page_source.lower()
-
-        # Log page info
-        recorder.event(
-            "INFO",
-            "navigate_assist",
-            "PAGE_LOADED",
-            f"URL: {actual_url}, Title: {page_title}, Body length: {len(body_text)}",
-        )
-
-        # Save HTML for inspection
-        diag_html_path = recorder.diagnostics_dir / f"assist_page_{int(time.time())}.html"
-        diag_html_path.parent.mkdir(parents=True, exist_ok=True)
-        diag_html_path.write_text(driver.page_source, encoding="utf-8")
-
-        # Save screenshot
-        screenshot_path = recorder.diagnostics_dir / f"assist_page_{int(time.time())}.png"
-        try:
-            driver.save_screenshot(str(screenshot_path))
-            recorder.event("INFO", "screenshot", "SAVED", f"Path: {screenshot_path}")
-        except Exception as ss_exc:
-            recorder.event("WARNING", "screenshot", "FAILED", str(ss_exc))
-
-        # Check for redirect to login (shouldn't happen per user confirmation)
-        if "login" in actual_url.lower() or "auth" in actual_url.lower():
-            recorder.checker(
-                "open_assist",
-                "FAIL",
-                CHECKER_APPOINTMENT,
-                f"Unexpected redirect to login: {actual_url}",
-                url=actual_url,
-            )
-            return False
-
-        # More robust validation - check multiple signals
-        checks = {
-            "appointment_in_text": "appointment" in body_text,
-            "service_in_text": "service" in body_text,
-            "react_app_present": "react" in body_text or "root" in body_text,
-            "has_forms": len(driver.find_elements(By.TAG_NAME, "form")) > 0,
-            "has_inputs": len(driver.find_elements(By.TAG_NAME, "input")) > 0,
-            "has_select": len(driver.find_elements(By.TAG_NAME, "select")) > 0,
-        }
-
-        # Log all checks
-        for check_name, result in checks.items():
-            recorder.event("INFO", "page_check", check_name.upper(), f"Result: {result}")
-
-        # Pass if ANY of these conditions met
-        if checks["appointment_in_text"] or (checks["has_forms"] and checks["has_inputs"]):
-            recorder.checker(
-                "open_assist",
-                "PASS",
-                CHECKER_APPOINTMENT,
-                f"Appointments page validated: {sum(checks.values())}/6 checks passed",
-                url=url,
-            )
-            return True
-        else:
-            recorder.checker(
-                "open_assist",
-                "FAIL",
-                CHECKER_APPOINTMENT,
-                f"Page validation failed: {sum(checks.values())}/6 checks passed",
-                url=url,
-            )
-            return False
-
-    except Exception as e:
-        tb_str = traceback.format_exc()
-        recorder.event(
-            "ERROR",
-            "open_assist",
-            "EXCEPTION",
-            f"{e}\n{tb_str}",
-        )
-        # Try to save screenshot even on exception
-        try:
-            screenshot_path = recorder.diagnostics_dir / f"error_{int(time.time())}.png"
-            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-            driver.save_screenshot(str(screenshot_path))
-        except:
-            pass
-        return False
-
-
-def _find_assist_react_input(driver, container_id: str):
-    """Find React input element in Assist dropdown."""
-    try:
-        container = driver.find_element(By.ID, container_id)
-        inputs = container.find_elements(By.TAG_NAME, "input")
-        if inputs:
-            return inputs[0]
+        if hasattr(driver, "switch_to"):
+            driver.switch_to.default_content()
     except Exception:
         pass
+
+
+def _switch_to_frame(driver, frame_elem) -> bool:
+    """Switch into a frame if possible."""
+    try:
+        if hasattr(driver, "switch_to"):
+            driver.switch_to.frame(frame_elem)
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _record_locator_success(
+    recorder: DiagnosticsRecorder,
+    *,
+    step: str,
+    code: str,
+    strategy: str,
+    selector: str,
+    frame_hint: str,
+) -> None:
+    recorder.event(
+        "INFO",
+        step,
+        code,
+        f"Locator strategy '{strategy}' matched in {frame_hint}",
+        selector=selector,
+        context={"strategy": strategy, "frame": frame_hint},
+    )
+
+
+def _capture_assist_failure_artifacts(
+    driver,
+    recorder: DiagnosticsRecorder,
+    *,
+    prefix: str,
+    reason: str,
+) -> Tuple[Optional[Path], Optional[Path]]:
+    """Capture screenshot + HTML + console logs for failure forensics."""
+    safe_prefix = _normalize_token(prefix) or "assist"
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    screenshot = recorder.capture_screenshot(driver, f"{safe_prefix}_{ts}")
+    html = recorder.capture_html(driver, f"{safe_prefix}_{ts}")
+
+    current_url = _normalize_text(getattr(driver, "current_url", ""))
+    title = _normalize_text(getattr(driver, "title", ""))
+    body_snippet_len = 0
+    try:
+        body = _normalize_text(driver.find_element(By.TAG_NAME, "body").text)
+        body_snippet_len = len(body[:500])
+    except Exception:
+        pass
+
+    console_path = recorder.output_dir / f"{safe_prefix}_{ts}_console.json"
+    console_saved = False
+    try:
+        logs = driver.get_log("browser")
+        with open(console_path, "w", encoding="utf-8") as fh:
+            json.dump(logs, fh, indent=2, default=str)
+        console_saved = True
+    except Exception:
+        console_saved = False
+
+    recorder.event(
+        "ERROR",
+        "assist_artifacts",
+        "ASSIST_FAILURE_ARTIFACTS",
+        reason,
+        url=current_url,
+        context={
+            "current_url": current_url,
+            "title": title,
+            "body_snippet_len": body_snippet_len,
+            "html_artifact": html.name if html else "",
+            "screenshot_artifact": screenshot.name if screenshot else "",
+            "console_artifact": console_path.name if console_saved else "",
+        },
+    )
+    return screenshot, html
+
+
+def _dismiss_blocking_modal_if_present(driver, recorder: DiagnosticsRecorder) -> bool:
+    """Dismiss an obvious blocking modal when present."""
+    dismissed = False
+    for strategy_name, by, selector in [
+        ("modal-close-buttons", By.XPATH, MODAL_DISMISS_BUTTON_XPATH),
+        ("modal-role-dialog", By.CSS_SELECTOR, "[role='dialog'] button"),
+        ("bootstrap-modal", By.CSS_SELECTOR, ".modal button"),
+    ]:
+        try:
+            buttons = driver.find_elements(by, selector)
+        except Exception:
+            buttons = []
+        for button in buttons:
+            if not _is_interactable(button):
+                continue
+            try:
+                button.click()
+                dismissed = True
+                recorder.event(
+                    "INFO",
+                    "dismiss_modal",
+                    "MODAL_DISMISSED",
+                    f"Dismissed blocking modal using {strategy_name}",
+                    selector=selector,
+                    context={"strategy": strategy_name},
+                )
+                time.sleep(0.2)
+                return True
+            except Exception:
+                continue
+    return dismissed
+
+
+def _locate_service_type_combobox(
+    driver,
+    recorder: DiagnosticsRecorder,
+    *,
+    timeout: int = 12,
+    require_interactable: bool = True,
+) -> Tuple[Optional[Any], str]:
+    """
+    Locate Service Type combobox in main document or inside iframes.
+    Returns (element, frame_hint). On success, leaves driver context where found.
+    """
+    deadline = time.time() + timeout
+    attempts = []
+
+    while time.time() < deadline:
+        _switch_to_default_content(driver)
+
+        # Search main document first.
+        for strategy_name, by, selector in SERVICE_TYPE_LOCATOR_STRATEGIES:
+            attempts.append(strategy_name)
+            try:
+                elements = driver.find_elements(by, selector)
+            except Exception:
+                elements = []
+            for element in elements:
+                if not require_interactable or _is_interactable(element):
+                    _record_locator_success(
+                        recorder,
+                        step="locate_service_type",
+                        code="SERVICE_TYPE_LOCATOR_HIT",
+                        strategy=strategy_name,
+                        selector=selector,
+                        frame_hint="main",
+                    )
+                    return element, "main"
+
+        # Search each iframe.
+        try:
+            frames = driver.find_elements(By.TAG_NAME, "iframe")
+        except Exception:
+            frames = []
+        for idx, frame in enumerate(frames):
+            _switch_to_default_content(driver)
+            if not _switch_to_frame(driver, frame):
+                continue
+            frame_hint = f"iframe[{idx}]"
+            for strategy_name, by, selector in SERVICE_TYPE_LOCATOR_STRATEGIES:
+                attempts.append(f"{strategy_name}:{frame_hint}")
+                try:
+                    elements = driver.find_elements(by, selector)
+                except Exception:
+                    elements = []
+                for element in elements:
+                    if not require_interactable or _is_interactable(element):
+                        _record_locator_success(
+                            recorder,
+                            step="locate_service_type",
+                            code="SERVICE_TYPE_LOCATOR_HIT",
+                            strategy=strategy_name,
+                            selector=selector,
+                            frame_hint=frame_hint,
+                        )
+                        return element, frame_hint
+
+        _dismiss_blocking_modal_if_present(driver, recorder)
+        time.sleep(0.35)
+
+    _switch_to_default_content(driver)
+    recorder.event(
+        "WARN",
+        "locate_service_type",
+        "SERVICE_TYPE_LOCATOR_MISS",
+        "Unable to locate Service Type combobox",
+        context={"attempts": attempts[-20:]},
+    )
+    return None, "main"
+
+
+def _find_service_type_reload_button(driver) -> Optional[Any]:
+    """Locate optional service-type reload control near the combobox."""
+    strategies = [
+        (By.CSS_SELECTOR, "[data-cy='service_type_id-reload']"),
+        (By.XPATH, "//div[@role='button' and @data-cy='service_type_id-reload']"),
+        (By.XPATH, "//label[contains(normalize-space(.), 'Service Type')]/following::*[@role='button'][1]"),
+    ]
+    for by, selector in strategies:
+        try:
+            buttons = driver.find_elements(by, selector)
+        except Exception:
+            buttons = []
+        for button in buttons:
+            if _is_interactable(button):
+                return button
     return None
 
 
-def _collect_assist_options(
-    driver, container_id: str, recorder: DiagnosticsRecorder
-) -> List[Dict[str, str]]:
-    """Extract options from Assist React dropdown."""
-    options = []
-    try:
-        react_input = _find_assist_react_input(driver, container_id)
-        if not react_input:
-            return options
+def _wait_for_service_type_options(driver, timeout: float = 4.0) -> List[Any]:
+    """Wait for Service Type option elements to appear."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for _, by, selector in SERVICE_TYPE_OPTION_LOCATOR_STRATEGIES:
+            try:
+                options = driver.find_elements(by, selector)
+            except Exception:
+                options = []
+            visible = [opt for opt in options if _normalize_text(getattr(opt, "text", ""))]
+            if visible:
+                return visible
+        time.sleep(0.2)
+    return []
 
-        # Click to open
-        react_input.click()
-        time.sleep(0.5)
 
-        # Try to extract from visible options
-        try:
-            option_elements = driver.find_elements(
-                By.XPATH, "//div[@role='option'] | //li[contains(@class,'option')]"
+def _click_matching_option(driver, target_label: str, target_value: str = "") -> bool:
+    """Click best-matching option in open combobox list."""
+    options = _wait_for_service_type_options(driver, timeout=5.0)
+    if not options:
+        return False
+
+    norm_target_label = _normalize_text(target_label).lower()
+    norm_target_value = _normalize_text(target_value).lower()
+
+    # 1) exact label
+    for option in options:
+        label = _normalize_text(getattr(option, "text", ""))
+        if label.lower() == norm_target_label and label:
+            option.click()
+            return True
+
+    # 2) data-value / value match
+    for option in options:
+        value = _normalize_text(option.get_attribute("data-value") or option.get_attribute("value"))
+        if value and norm_target_value and value.lower() == norm_target_value:
+            option.click()
+            return True
+
+    # 3) prefix label
+    for option in options:
+        label = _normalize_text(getattr(option, "text", ""))
+        if norm_target_label and label.lower().startswith(norm_target_label[:18]):
+            try:
+                option.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", option)
+            return True
+
+    return False
+
+
+def _wait_for_assist_ready(driver, recorder: DiagnosticsRecorder, timeout: int = 20) -> bool:
+    """Readiness gate: Service Type combobox must be present and interactable."""
+    element, frame_hint = _locate_service_type_combobox(
+        driver,
+        recorder,
+        timeout=timeout,
+        require_interactable=True,
+    )
+    if not element:
+        return False
+    if not _is_interactable(element):
+        return False
+    recorder.checker(
+        "assist_readiness",
+        "PASS",
+        CHECKER_SERVICE_TYPE_SELECT,
+        "Service Type combobox located and interactable",
+        url=_normalize_text(getattr(driver, "current_url", "")),
+        selector="; ".join(s for _, _, s in SERVICE_TYPE_LOCATOR_STRATEGIES[:3]),
+    )
+    recorder.event(
+        "INFO",
+        "assist_readiness",
+        "ASSIST_READY",
+        f"Assist readiness passed in {frame_hint}",
+        context={"frame": frame_hint},
+    )
+    return True
+
+
+def _open_assist_appointments_new(
+    driver,
+    recorder: DiagnosticsRecorder,
+    probe_client_id: str = "",
+) -> bool:
+    """
+    Open appointment editor using bridge and direct routes.
+    Success criteria: Service Type combobox is interactable.
+    """
+    attempts: List[Tuple[str, str]] = []
+    bridge_url = (
+        f"{BASE_URL.rstrip('/')}/appointment-edit.asp?NavShow=none&createRepeat=no&cid={probe_client_id}&appointmentDate_override="
+        if probe_client_id
+        else ""
+    )
+    route_candidates: List[Tuple[str, str]] = []
+    if bridge_url:
+        route_candidates.append(("tp1_bridge_direct", bridge_url))
+    route_candidates.append(("assist_direct", ASSIST_DIRECT_URL))
+    if probe_client_id:
+        route_candidates.append(
+            (
+                "tp1_client_appointments",
+                f"{BASE_URL.rstrip('/')}/client-details.asp?eid={probe_client_id}&BREAKDOWN_SHOW_APPOINTMENTS=yes",
             )
-            for elem in option_elements:
-                text = _normalize_text(elem.text)
-                # Try to get data-value or other identifier
-                value = elem.get_attribute("data-value")
-                if not value:
-                    value = elem.get_attribute("value")
-                if not value:
-                    value = text  # Fallback to text
-                if text and value:
-                    options.append({"label": text, "value": value})
-        except Exception:
-            pass
-
-        # Close by pressing Escape
-        react_input.send_keys(Keys.ESCAPE)
-        time.sleep(0.3)
-
-        recorder.event(
-            "INFO",
-            "collect_options",
-            "OPTIONS_COLLECTED",
-            f"Collected {len(options)} options",
-            option_count=len(options),
         )
 
+    for route_name, url in route_candidates:
+        attempts.append((route_name, url))
+        try:
+            driver.get(url)
+            WebDriverWait(driver, 25).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            time.sleep(0.4)
+
+            if route_name == "tp1_client_appointments":
+                add_selectors = [
+                    (By.XPATH, "//a[contains(normalize-space(.), 'Add Appointment')]"),
+                    (By.XPATH, "//button[contains(normalize-space(.), 'Add Appointment')]"),
+                    (By.XPATH, "//a[contains(@href, 'appointment-edit.asp')]"),
+                ]
+                clicked = False
+                for by, selector in add_selectors:
+                    try:
+                        elems = driver.find_elements(by, selector)
+                    except Exception:
+                        elems = []
+                    for elem in elems:
+                        if _is_interactable(elem):
+                            try:
+                                elem.click()
+                            except Exception:
+                                driver.execute_script("arguments[0].click();", elem)
+                            clicked = True
+                            time.sleep(0.8)
+                            break
+                    if clicked:
+                        break
+                if not clicked and bridge_url:
+                    driver.get(bridge_url)
+                    time.sleep(0.8)
+
+            if _wait_for_assist_ready(driver, recorder, timeout=12):
+                recorder.checker(
+                    "open_assist",
+                    "PASS",
+                    CHECKER_APPOINTMENT,
+                    f"Assist opened via {route_name}",
+                    url=_normalize_text(getattr(driver, "current_url", "")),
+                )
+                return True
+
+            _capture_assist_failure_artifacts(
+                driver,
+                recorder,
+                prefix=f"assist_open_fail_{route_name}",
+                reason=f"Readiness failed after opening route {route_name}",
+            )
+        except Exception as exc:
+            screenshot, html = _capture_assist_failure_artifacts(
+                driver,
+                recorder,
+                prefix=f"assist_open_exception_{route_name}",
+                reason=f"Route {route_name} failed: {exc}",
+            )
+            recorder.checker(
+                "open_assist",
+                "FAIL",
+                CHECKER_APPOINTMENT,
+                f"Route {route_name} exception: {exc}",
+                url=_normalize_text(getattr(driver, "current_url", "")),
+                screenshot=screenshot,
+                html=html,
+            )
+
+    recorder.checker(
+        "open_assist",
+        "FAIL",
+        CHECKER_APPOINTMENT,
+        f"All assist entry routes failed: {attempts}",
+        url=_normalize_text(getattr(driver, "current_url", "")),
+    )
+    return False
+
+
+def _collect_assist_options(driver, recorder: DiagnosticsRecorder) -> List[Dict[str, str]]:
+    """Extract visible Service Type options from combobox list."""
+    options: List[Dict[str, str]] = []
+    combobox, _ = _locate_service_type_combobox(
+        driver,
+        recorder,
+        timeout=10,
+        require_interactable=True,
+    )
+    if not combobox:
         return options
-    except Exception as e:
-        recorder.event(
-            "ERROR",
-            "collect_options",
-            "EXCEPTION",
-            str(e),
-        )
-        return options
+
+    try:
+        combobox.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", combobox)
+    time.sleep(0.3)
+
+    option_elements = _wait_for_service_type_options(driver, timeout=5.0)
+    for elem in option_elements:
+        label = _normalize_text(getattr(elem, "text", ""))
+        value = _normalize_text(elem.get_attribute("data-value") or elem.get_attribute("value"))
+        if label:
+            options.append({"label": label, "value": value or label})
+
+    # Dismiss open list.
+    try:
+        combobox.send_keys(Keys.ESCAPE)
+    except Exception:
+        pass
+
+    recorder.event(
+        "INFO",
+        "collect_options",
+        "OPTIONS_COLLECTED",
+        f"Collected {len(options)} options from Assist",
+        option_count=len(options),
+    )
+    return options
 
 
 # =============================================================================
@@ -596,125 +961,98 @@ def _collect_assist_options(
 
 def _select_assist_option_with_retries(
     driver,
-    container_id: str,
     target_value: str,
     target_label: str,
     recorder: DiagnosticsRecorder,
     max_retries: int = 3,
 ) -> bool:
     """
-    Select Assist option with retry strategies:
-    1. Full label → type, find by data-value, click
-    2. Prefix → type prefix, find, click
-    3. DOM search → open, find in DOM, click via JS
+    Select Service Type with layered fallbacks:
+    1) click combobox + click exact option
+    2) reload control + click option
+    3) type label + Enter
     """
-    react_input = _find_assist_react_input(driver, container_id)
-    hidden_input = None
-    try:
-        hidden_input = driver.find_element(By.ID, f"{container_id}_hidden")
-    except Exception:
-        pass
+    strategies = ["click_option", "reload_then_click", "type_then_enter"]
+    for attempt in range(max_retries):
+        for strategy in strategies:
+            try:
+                combobox, frame_hint = _locate_service_type_combobox(
+                    driver,
+                    recorder,
+                    timeout=6,
+                    require_interactable=True,
+                )
+                if not combobox:
+                    continue
 
-    strategies = [
-        ("full_label", target_label, target_label),
-        ("prefix", target_label.split()[0] if target_label else "", target_label),
-        (
-            "dom_search",
-            "",
-            target_label,
-        ),  # DOM search doesn't need typing
-    ]
+                try:
+                    combobox.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", combobox)
+                time.sleep(0.2)
 
-    for strategy_name, query, expected in strategies:
-        try:
-            if not react_input:
-                react_input = _find_assist_react_input(driver, container_id)
-            if not react_input:
+                if strategy == "reload_then_click":
+                    reload_btn = _find_service_type_reload_button(driver)
+                    if reload_btn:
+                        try:
+                            reload_btn.click()
+                        except Exception:
+                            driver.execute_script("arguments[0].click();", reload_btn)
+                        time.sleep(0.4)
+                        try:
+                            combobox.click()
+                        except Exception:
+                            driver.execute_script("arguments[0].click();", combobox)
+                        time.sleep(0.2)
+
+                if strategy in {"click_option", "reload_then_click"}:
+                    if _click_matching_option(driver, target_label, target_value):
+                        recorder.event(
+                            "INFO",
+                            "select_option",
+                            "SERVICE_TYPE_SELECTED",
+                            f"Selected '{target_label}' using {strategy}",
+                            context={"strategy": strategy, "frame": frame_hint},
+                        )
+                        return True
+
+                if strategy == "type_then_enter":
+                    try:
+                        combobox.clear()
+                    except Exception:
+                        pass
+                    combobox.send_keys(target_label)
+                    time.sleep(0.35)
+                    combobox.send_keys(Keys.ENTER)
+                    recorder.event(
+                        "INFO",
+                        "select_option",
+                        "SERVICE_TYPE_SELECTED",
+                        f"Selected '{target_label}' using type+enter",
+                        context={"strategy": strategy, "frame": frame_hint},
+                    )
+                    return True
+
+            except Exception as exc:
+                recorder.event(
+                    "WARN",
+                    "select_option",
+                    "SELECT_STRATEGY_FAILED",
+                    str(exc),
+                    context={
+                        "strategy": strategy,
+                        "attempt": attempt + 1,
+                        "target_label": target_label,
+                    },
+                )
                 continue
 
-            # Clear input
-            react_input.clear()
-            time.sleep(0.2)
-
-            # Strategy-specific action
-            if strategy_name in ("full_label", "prefix"):
-                # Type the query
-                react_input.send_keys(query)
-                time.sleep(0.5)
-
-                # Find matching option
-                option_elements = driver.find_elements(
-                    By.XPATH, "//div[@role='option'] | //li[contains(@class,'option')]"
-                )
-                for elem in option_elements:
-                    elem_text = _normalize_text(elem.text)
-                    if elem_text.lower() == expected.lower():
-                        elem.click()
-                        time.sleep(0.3)
-                        # Verify selection
-                        if hidden_input:
-                            if hidden_input.get_attribute("value") == target_value:
-                                recorder.event(
-                                    "INFO",
-                                    "select_option",
-                                    f"STRATEGY_{strategy_name.upper()}",
-                                    f"Selected: {target_label}",
-                                    context={"strategy": strategy_name},
-                                )
-                                return True
-                        else:
-                            # No hidden input to verify, assume success
-                            return True
-
-            elif strategy_name == "dom_search":
-                # Open dropdown
-                react_input.click()
-                time.sleep(0.5)
-
-                # Search in DOM for matching option
-                option_elements = driver.find_elements(
-                    By.XPATH,
-                    "//div[@role='option'] | //li[contains(@class,'option')]",
-                )
-                for elem in option_elements:
-                    elem_text = _normalize_text(elem.text)
-                    if elem_text.lower() == expected.lower():
-                        # Scroll into view
-                        driver.execute_script("arguments[0].scrollIntoView(true);", elem)
-                        time.sleep(0.2)
-                        # Click via JS for reliability
-                        driver.execute_script("arguments[0].click();", elem)
-                        time.sleep(0.3)
-                        # Verify
-                        if hidden_input:
-                            if hidden_input.get_attribute("value") == target_value:
-                                recorder.event(
-                                    "INFO",
-                                    "select_option",
-                                    "STRATEGY_DOM_SEARCH",
-                                    f"Selected: {target_label}",
-                                    context={"strategy": "dom_search"},
-                                )
-                                return True
-                        else:
-                            return True
-
-        except Exception as e:
-            recorder.event(
-                "WARN",
-                "select_option",
-                f"STRATEGY_{strategy_name.upper()}_FAILED",
-                str(e),
-                context={"strategy": strategy_name},
-            )
-            continue
-
-    # All strategies failed
     recorder.event(
         "ERROR",
         "select_option",
         "SELECT_FAILED_ALL_STRATEGIES",
-        f"Could not select {target_label}",
+        f"Could not select '{target_label}'",
+        context={"target_label": target_label, "target_value": target_value},
     )
     return False
 
@@ -724,96 +1062,318 @@ def _select_assist_option_with_retries(
 # =============================================================================
 
 
+def _table_headers(table_elem) -> List[str]:
+    """Extract normalized table headers."""
+    headers = []
+    try:
+        header_cells = table_elem.find_elements(By.XPATH, ".//thead//th | .//tr[1]/th")
+    except Exception:
+        header_cells = []
+    for cell in header_cells:
+        token = _normalize_text(getattr(cell, "text", ""))
+        if token:
+            headers.append(token.lower())
+    return headers
+
+
+def _locate_variant_table(driver, recorder: DiagnosticsRecorder) -> Tuple[Optional[Any], str]:
+    """Locate variant table with layered selectors."""
+    for strategy_name, by, selector in VARIANT_TABLE_LOCATOR_STRATEGIES:
+        try:
+            tables = driver.find_elements(by, selector)
+        except Exception:
+            tables = []
+        for table in tables:
+            headers = _table_headers(table)
+            if headers:
+                joined = " ".join(headers)
+                if "service" not in joined or "rate" not in joined or "code" not in joined:
+                    if strategy_name != "fallback-any-table":
+                        continue
+            recorder.event(
+                "INFO",
+                "locate_variant_table",
+                "VARIANT_TABLE_LOCATOR_HIT",
+                f"Variant table found via {strategy_name}",
+                selector=selector,
+                context={"strategy": strategy_name, "headers": headers},
+            )
+            return table, strategy_name
+    recorder.event(
+        "WARN",
+        "locate_variant_table",
+        CHECKER_VARIANT_TABLE_MISSING,
+        "Variant table not found via configured locators",
+    )
+    return None, ""
+
+
+def _extract_cell_text(cell) -> str:
+    """Extract text/value from cell including input-backed values."""
+    value = _normalize_text(cell.get_attribute("value"))
+    if value:
+        return value
+    try:
+        inputs = cell.find_elements(By.XPATH, ".//input | .//textarea")
+    except Exception:
+        inputs = []
+    for input_elem in inputs:
+        value = _normalize_text(input_elem.get_attribute("value"))
+        if value:
+            return value
+    return _normalize_text(getattr(cell, "text", ""))
+
+
+def _wait_for_variants_to_stabilize(
+    driver,
+    recorder: DiagnosticsRecorder,
+    timeout: float = 8.0,
+) -> Tuple[Optional[Any], int]:
+    """Wait until variant row count is stable for at least two polls."""
+    deadline = time.time() + timeout
+    prev_count = -1
+    stable_cycles = 0
+    last_table = None
+    while time.time() < deadline:
+        table, _ = _locate_variant_table(driver, recorder)
+        if table is None:
+            time.sleep(0.25)
+            continue
+        last_table = table
+        try:
+            row_elements = table.find_elements(By.CSS_SELECTOR, "tbody tr")
+            if not row_elements:
+                row_elements = table.find_elements(By.XPATH, ".//tr[td]")
+        except Exception:
+            row_elements = []
+        count = len(row_elements)
+        if count > 0 and count == prev_count:
+            stable_cycles += 1
+            if stable_cycles >= 2:
+                return table, count
+        else:
+            stable_cycles = 0
+        prev_count = count
+        time.sleep(0.25)
+    return last_table, max(prev_count, 0)
+
+
 def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[Dict]:
     """
     Extract variant rows from Assist appointment details table.
     Returns list of variant dicts with keys:
     - Service Variant Label
     - Rate
+    - Rate (Raw)
     - Code
+    - Code (Raw)
     - Unit
     """
-    rows = []
+    extracted_rows: List[Dict[str, str]] = []
+    table, observed_count = _wait_for_variants_to_stabilize(driver, recorder, timeout=9.0)
+    if table is None:
+        recorder.checker(
+            "extract_variants",
+            "FAIL",
+            CHECKER_VARIANT_TABLE_MISSING,
+            "Variant table not found",
+            url=_normalize_text(getattr(driver, "current_url", "")),
+        )
+        return extracted_rows
 
-    # Multiple XPath selectors to find variant table
-    selectors = [
-        "//table[.//th[normalize-space(text())='Service']]",
-        "//div[contains(@class,'table')][.//span[contains(text(),'Service')]]",
-        "//div[@role='table'][.//div[@role='columnheader' and contains(text(),'Service')]]",
-        "//table",  # Fallback to any table
-    ]
+    try:
+        row_elements = table.find_elements(By.CSS_SELECTOR, "tbody tr")
+        if not row_elements:
+            row_elements = table.find_elements(By.XPATH, ".//tr[td]")
+    except Exception:
+        row_elements = []
 
-    for selector in selectors:
+    for row_elem in row_elements:
         try:
-            table = driver.find_element(By.XPATH, selector)
-
-            # Extract rows
-            row_elements = table.find_elements(By.XPATH, ".//tr[td or @role='row']")
-
-            if not row_elements:
+            cells = row_elem.find_elements(By.CSS_SELECTOR, "td")
+            if not cells:
+                cells = row_elem.find_elements(By.XPATH, ".//td | .//div[@role='cell']")
+            if len(cells) < 3:
                 continue
 
-            for row_elem in row_elements:
-                try:
-                    # Get cells
-                    cells = row_elem.find_elements(By.XPATH, ".//td | .//div[@role='cell']")
+            service_label = _extract_cell_text(cells[0])
+            rate_raw = _extract_cell_text(cells[1])
+            code_raw = _extract_cell_text(cells[2])
+            unit_hint = _extract_cell_text(cells[3]) if len(cells) > 3 else ""
+            rate_norm, unit = _split_rate_and_unit(rate_raw, unit_hint)
+            code_norm = _normalize_code_text(code_raw)
 
-                    if len(cells) < 3:  # Need at least Service, Rate, Code
-                        continue
+            if not service_label:
+                continue
 
-                    # Extract cell values
-                    variant_label = _normalize_text(cells[0].text)
-                    rate_raw = _normalize_text(
-                        cells[1].get_attribute("value") or cells[1].text
-                    )
-                    code_raw = _normalize_text(
-                        cells[2].get_attribute("value") or cells[2].text
-                    )
-                    unit = (
-                        _normalize_text(cells[3].text) if len(cells) > 3 else ""
-                    )
-
-                    if variant_label:  # Only include if we have a label
-                        rate_norm = _coerce_rate_text(rate_raw)
-                        code_norm = _normalize_token(code_raw)
-
-                        rows.append(
-                            {
-                                "Service Variant Label": variant_label,
-                                "Rate": rate_norm,
-                                "Rate (Raw)": rate_raw,
-                                "Code": code_norm,
-                                "Code (Raw)": code_raw,
-                                "Unit": unit,
-                            }
-                        )
-
-                except Exception:
-                    continue
-
-            if rows:
-                recorder.event(
-                    "INFO",
-                    "extract_variants",
-                    CHECKER_VARIANT_TABLE_EXTRACT,
-                    f"Extracted {len(rows)} variant rows",
-                    option_count=len(rows),
-                )
-                return rows
-
+            extracted_rows.append(
+                {
+                    "Service Variant Label": service_label,
+                    "Rate": rate_norm,
+                    "Rate (Raw)": rate_raw,
+                    "Code": code_norm,
+                    "Code (Raw)": code_raw,
+                    "Unit": unit,
+                }
+            )
         except Exception:
             continue
 
-    # No table found
-    if not rows:
-        recorder.event(
-            "WARN",
+    if extracted_rows:
+        recorder.checker(
             "extract_variants",
-            CHECKER_VARIANT_TABLE_MISSING,
-            "Variant table not found",
+            "PASS",
+            CHECKER_VARIANT_TABLE_EXTRACT,
+            f"Extracted {len(extracted_rows)} rows",
+            option_count=len(extracted_rows),
+            url=_normalize_text(getattr(driver, "current_url", "")),
         )
+    else:
+        code = CHECKER_VARIANT_TABLE_EMPTY if observed_count > 0 else CHECKER_VARIANT_TABLE_MISSING
+        recorder.checker(
+            "extract_variants",
+            "FAIL",
+            code,
+            f"Variant table had no extractable rows (observed_row_count={observed_count})",
+            option_count=observed_count,
+            url=_normalize_text(getattr(driver, "current_url", "")),
+        )
+    return extracted_rows
 
-    return rows
+
+def _load_service_types_from_reference_index(
+    recorder: DiagnosticsRecorder,
+) -> Dict[str, str]:
+    """Load Service Type ID -> label mapping from latest reference export."""
+    service_types: Dict[str, str] = {}
+    candidates = [
+        line_item_paths.reference_latest_csv(),
+        line_item_paths.reference_latest_xlsx(),
+    ]
+
+    for source_path in candidates:
+        if not source_path.exists():
+            continue
+        try:
+            rows: List[Dict[str, str]] = []
+            if source_path.suffix.lower() == ".csv":
+                with open(source_path, "r", newline="", encoding="utf-8") as fh:
+                    rows = list(csv.DictReader(fh))
+            else:
+                wb = load_workbook(source_path, read_only=True, data_only=True)
+                ws = wb.active
+                header = []
+                for cell in ws[1]:
+                    header.append(_normalize_text(cell.value))
+                for values in ws.iter_rows(min_row=2, values_only=True):
+                    row = {}
+                    for idx, value in enumerate(values):
+                        if idx < len(header) and header[idx]:
+                            row[header[idx]] = _normalize_text(value)
+                    rows.append(row)
+
+            if not rows:
+                continue
+
+            for row in rows:
+                id_value = (
+                    row.get("ID")
+                    or row.get("Service Type ID")
+                    or row.get("ServiceTypeID")
+                    or row.get("ServiceType Id")
+                    or ""
+                )
+                label_value = (
+                    row.get("Service Type")
+                    or row.get("Name")
+                    or row.get("ServiceType")
+                    or row.get("Service Type Label")
+                    or ""
+                )
+                id_value = _normalize_text(id_value)
+                label_value = _normalize_text(label_value)
+                if id_value and label_value and id_value not in service_types:
+                    service_types[id_value] = label_value
+
+            if service_types:
+                recorder.event(
+                    "INFO",
+                    "service_type_index",
+                    "REFERENCE_INDEX_LOADED",
+                    f"Loaded {len(service_types)} Service Types from {source_path.name}",
+                    option_count=len(service_types),
+                    context={"path": str(source_path)},
+                )
+                return service_types
+        except Exception as exc:
+            recorder.event(
+                "WARN",
+                "service_type_index",
+                "REFERENCE_INDEX_LOAD_FAILED",
+                f"Could not load {source_path}: {exc}",
+                context={"path": str(source_path)},
+            )
+            continue
+
+    recorder.event(
+        "WARN",
+        "service_type_index",
+        "REFERENCE_INDEX_MISSING",
+        "No reference Service Type export found; falling back to UI options",
+    )
+    return service_types
+
+
+def _build_variant_record(
+    *,
+    service_type_id: str,
+    service_type_label: str,
+    variant: Dict[str, str],
+    probe_client_id: str,
+    source_url: str,
+) -> Dict[str, str]:
+    return {
+        "Parent Service Type ID": service_type_id,
+        "Parent Service Type Label": service_type_label,
+        "Service Variant Label": variant.get("Service Variant Label", ""),
+        "Rate": variant.get("Rate", ""),
+        "Rate (Raw)": variant.get("Rate (Raw)", ""),
+        "Code": variant.get("Code", ""),
+        "Code (Raw)": variant.get("Code (Raw)", ""),
+        "Unit": variant.get("Unit", ""),
+        "Status": "PASS",
+        "Error Reason": "",
+        "Conflict": "UNKNOWN",
+        "Probe Client ID": probe_client_id,
+        "Source URL": source_url,
+        "Captured At (UTC)": _utc_now(),
+    }
+
+
+def _build_failure_record(
+    *,
+    service_type_id: str,
+    service_type_label: str,
+    probe_client_id: str,
+    source_url: str,
+    reason: str,
+) -> Dict[str, str]:
+    return {
+        "Parent Service Type ID": service_type_id,
+        "Parent Service Type Label": service_type_label,
+        "Service Variant Label": "",
+        "Rate": "",
+        "Rate (Raw)": "",
+        "Code": "",
+        "Code (Raw)": "",
+        "Unit": "",
+        "Status": "FAIL",
+        "Error Reason": _normalize_text(reason),
+        "Conflict": "N/A",
+        "Probe Client ID": probe_client_id,
+        "Source URL": source_url,
+        "Captured At (UTC)": _utc_now(),
+    }
 
 
 # =============================================================================
@@ -827,19 +1387,24 @@ def _detect_conflicts(variants: List[Dict[str, str]]) -> Tuple[List[Dict], List[
     Returns (clean_rows, conflict_rows) where conflict rows have
     "Conflict" = "YES" and conflict detail.
     """
-    by_key = {}
+    by_key: Dict[Tuple[str, str], List[Dict[str, str]]] = {}
+    clean_rows: List[Dict[str, str]] = []
+    conflict_rows: List[Dict[str, str]] = []
+
     for v in variants:
-        key = (v["Parent Service Type ID"], v["Service Variant Label"])
+        if _normalize_text(v.get("Status", "PASS")).upper() == "FAIL":
+            v["Conflict"] = "N/A"
+            v["Conflict Detail"] = ""
+            clean_rows.append(v)
+            continue
+        key = (v.get("Parent Service Type ID", ""), v.get("Service Variant Label", ""))
         if key not in by_key:
             by_key[key] = []
         by_key[key].append(v)
 
-    clean_rows = []
-    conflict_rows = []
-
     for key, rows in by_key.items():
-        rates = set(r["Rate"] for r in rows if r.get("Rate"))
-        codes = set(r["Code"] for r in rows if r.get("Code"))
+        rates = set(r.get("Rate", "") for r in rows if r.get("Rate"))
+        codes = set(r.get("Code", "") for r in rows if r.get("Code"))
 
         if len(rates) > 1 or len(codes) > 1:
             for r in rows:
@@ -869,6 +1434,9 @@ def extract_service_type_variants(
     on_row: RowCallback = None,
     resume: bool = True,
     force_refresh: bool = False,
+    smoke_mode: bool = False,
+    smoke_service_type_id: str = "",
+    smoke_service_type_label: str = "",
 ) -> Dict[str, object]:
     """
     Extract all Service Type variants from Assist appointments form.
@@ -881,6 +1449,9 @@ def extract_service_type_variants(
         on_row: Row callback (called for each variant row)
         resume: Resume from checkpoint if exists
         force_refresh: Reprocess all even if checkpointed
+        smoke_mode: Restrict extraction to a single Service Type
+        smoke_service_type_id: Optional Service Type ID to use in smoke mode
+        smoke_service_type_label: Optional Service Type label to use in smoke mode
 
     Returns:
         Summary dict with stats
@@ -897,7 +1468,7 @@ def extract_service_type_variants(
     # Setup diagnostics
     paths = line_item_paths.get_variant_paths(run_id)
     diag_dir = paths["diagnostics_dir"]
-    recorder = DiagnosticsRecorder(run_id, diag_dir)
+    recorder = DiagnosticsRecorder(run_id, diag_dir, on_event=on_event)
 
     # Load checkpoint if resuming
     checkpoint = None
@@ -919,9 +1490,11 @@ def extract_service_type_variants(
 
     processed_ids = set(checkpoint.get("processed_service_type_ids", []))
     failed_ids = set(checkpoint.get("failed_service_type_ids", []))
-    all_variants = []
+    all_variants: List[Dict[str, str]] = []
+    all_service_types: Dict[str, str] = {}
 
     driver = None
+    fatal_error = ""
     try:
         # Ensure Chrome driver
         ensure_credentials()
@@ -932,42 +1505,50 @@ def extract_service_type_variants(
 
         # Navigate to Assist
         _emit("Opening Assist appointments form...", on_progress)
-        if not _open_assist_appointments_new(driver, recorder):
-            raise Exception("Failed to open Assist appointments form")
+        preferred_probe = probe_client_ids[0] if probe_client_ids else ""
+        if not _open_assist_appointments_new(driver, recorder, preferred_probe):
+            raise RuntimeError("Failed to open Assist appointment editor with interactable Service Type combobox.")
 
-        # Collect all Service Types from all probe clients
-        all_service_types = {}  # value -> label mapping
-        for client_id in probe_client_ids:
-            try:
-                _emit(f"Collecting Service Types for client {client_id}...", on_progress)
+        # Collect Service Types from exported index first, fallback to UI options.
+        all_service_types = _load_service_types_from_reference_index(recorder)
+        if not all_service_types:
+            options = _collect_assist_options(driver, recorder)
+            for opt in options:
+                value = _normalize_text(opt.get("value") or "")
+                label = _normalize_text(opt.get("label") or "")
+                if value and label and value not in all_service_types:
+                    all_service_types[value] = label
 
-                # Collect options
-                container_id = "service_type_select"  # Assumed container ID
-                options = _collect_assist_options(driver, container_id, recorder)
+        if not all_service_types:
+            raise RuntimeError("No Service Types available from reference index or Assist combobox options.")
 
-                for opt in options:
-                    value = opt.get("value")
-                    label = opt.get("label")
-                    if value and label:
-                        if value not in all_service_types:
-                            all_service_types[value] = label
+        if smoke_mode:
+            selected: Dict[str, str] = {}
+            target_id = _normalize_text(smoke_service_type_id)
+            target_label = _normalize_text(smoke_service_type_label).lower()
+            if target_id and target_id in all_service_types:
+                selected[target_id] = all_service_types[target_id]
+            elif target_label:
+                for st_id, st_label in sorted(all_service_types.items()):
+                    if target_label in st_label.lower():
+                        selected[st_id] = st_label
+                        break
+            if not selected:
+                first_id = next(iter(sorted(all_service_types.keys())))
+                selected[first_id] = all_service_types[first_id]
+            all_service_types = selected
+            recorder.event(
+                "INFO",
+                "smoke_mode",
+                "SMOKE_MODE_ACTIVE",
+                f"Smoke mode active for {len(all_service_types)} Service Type(s)",
+                context=all_service_types,
+            )
 
-                _emit(f"Found {len(options)} Service Types for client {client_id}", on_progress)
-
-            except Exception as e:
-                recorder.event(
-                    "ERROR",
-                    "collect_service_types",
-                    "EXCEPTION",
-                    str(e),
-                    client_id=client_id,
-                )
-                continue
-
-        _emit(f"Total unique Service Types: {len(all_service_types)}", on_progress)
+        _emit(f"Total Service Types queued: {len(all_service_types)}", on_progress)
 
         # Extract variants for each Service Type
-        for st_value, st_label in sorted(all_service_types.items()):
+        for st_value, st_label in sorted(all_service_types.items(), key=lambda kv: kv[1].lower()):
             if force_refresh:
                 processed_flag = False
             else:
@@ -977,52 +1558,104 @@ def extract_service_type_variants(
                 _emit(f"Skipping {st_label} (already processed)", on_progress)
                 continue
 
+            source_url = _normalize_text(getattr(driver, "current_url", ""))
             try:
                 _emit(f"Extracting variants for {st_label}...", on_progress)
 
                 # Select Service Type
-                container_id = "service_type_select"
                 success = _select_assist_option_with_retries(
                     driver,
-                    container_id,
                     st_value,
                     st_label,
                     recorder,
                 )
 
                 if not success:
+                    reason = "Service Type selection failed after fallback strategies."
+                    screenshot, html = _capture_assist_failure_artifacts(
+                        driver,
+                        recorder,
+                        prefix=f"service_type_select_fail_{st_value}",
+                        reason=reason,
+                    )
+                    recorder.checker(
+                        "service_type_select",
+                        "FAIL",
+                        CHECKER_SERVICE_TYPE_SELECT,
+                        reason,
+                        url=_normalize_text(getattr(driver, "current_url", "")),
+                        selector="Service Type combobox",
+                        screenshot=screenshot,
+                        html=html,
+                    )
+
+                    failure_row = _build_failure_record(
+                        service_type_id=st_value,
+                        service_type_label=st_label,
+                        probe_client_id=preferred_probe,
+                        source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
+                        reason=reason,
+                    )
+                    all_variants.append(failure_row)
+                    _append_to_checkpoint_csv(run_id, [failure_row])
+                    if on_row:
+                        on_row(failure_row)
+
                     failed_ids.add(st_value)
                     checkpoint["failed_service_type_ids"] = list(failed_ids)
+                    checkpoint["total_variant_rows"] = len(all_variants)
                     _update_checkpoint(run_id, checkpoint)
                     continue
 
                 # Extract variants from table
-                time.sleep(1)  # Wait for table to render
                 variants = _extract_variant_table_rows(driver, recorder)
 
                 if not variants:
+                    reason = "Variants table missing or empty for selected Service Type."
+                    screenshot, html = _capture_assist_failure_artifacts(
+                        driver,
+                        recorder,
+                        prefix=f"service_type_variants_missing_{st_value}",
+                        reason=reason,
+                    )
+                    recorder.checker(
+                        "extract_variants",
+                        "FAIL",
+                        CHECKER_VARIANT_TABLE_MISSING,
+                        reason,
+                        url=_normalize_text(getattr(driver, "current_url", "")),
+                        screenshot=screenshot,
+                        html=html,
+                    )
+
+                    failure_row = _build_failure_record(
+                        service_type_id=st_value,
+                        service_type_label=st_label,
+                        probe_client_id=preferred_probe,
+                        source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
+                        reason=reason,
+                    )
+                    all_variants.append(failure_row)
+                    _append_to_checkpoint_csv(run_id, [failure_row])
+                    if on_row:
+                        on_row(failure_row)
+
                     failed_ids.add(st_value)
                     checkpoint["failed_service_type_ids"] = list(failed_ids)
+                    checkpoint["total_variant_rows"] = len(all_variants)
                     _update_checkpoint(run_id, checkpoint)
                     continue
 
                 # Build full variant records
-                variant_records = []
+                variant_records: List[Dict[str, str]] = []
                 for variant in variants:
-                    record = {
-                        "Parent Service Type ID": st_value,
-                        "Parent Service Type Label": st_label,
-                        "Service Variant Label": variant.get("Service Variant Label", ""),
-                        "Rate": variant.get("Rate", ""),
-                        "Rate (Raw)": variant.get("Rate (Raw)", ""),
-                        "Code": variant.get("Code", ""),
-                        "Code (Raw)": variant.get("Code (Raw)", ""),
-                        "Unit": variant.get("Unit", ""),
-                        "Conflict": "UNKNOWN",  # Will be determined after all clients
-                        "Probe Client ID": probe_client_ids[0] if probe_client_ids else "",
-                        "Source URL": driver.current_url,
-                        "Captured At (UTC)": _utc_now(),
-                    }
+                    record = _build_variant_record(
+                        service_type_id=st_value,
+                        service_type_label=st_label,
+                        variant=variant,
+                        probe_client_id=preferred_probe,
+                        source_url=_normalize_text(getattr(driver, "current_url", "")),
+                    )
                     variant_records.append(record)
                     if on_row:
                         on_row(record)
@@ -1043,14 +1676,44 @@ def extract_service_type_variants(
                 )
 
             except Exception as e:
+                reason = f"Exception during Service Type extraction: {e}"
+                screenshot, html = _capture_assist_failure_artifacts(
+                    driver,
+                    recorder,
+                    prefix=f"service_type_exception_{st_value}",
+                    reason=reason,
+                )
                 recorder.event(
                     "ERROR",
                     "extract_service_type",
                     "EXCEPTION",
-                    str(e),
+                    reason,
                     context={"service_type": st_label},
                 )
+                recorder.checker(
+                    "extract_service_type",
+                    "FAIL",
+                    "CHK_SERVICE_TYPE_EXCEPTION",
+                    reason,
+                    url=_normalize_text(getattr(driver, "current_url", "")),
+                    screenshot=screenshot,
+                    html=html,
+                )
+                failure_row = _build_failure_record(
+                    service_type_id=st_value,
+                    service_type_label=st_label,
+                    probe_client_id=preferred_probe,
+                    source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
+                    reason=reason,
+                )
+                all_variants.append(failure_row)
+                _append_to_checkpoint_csv(run_id, [failure_row])
+                if on_row:
+                    on_row(failure_row)
                 failed_ids.add(st_value)
+                checkpoint["failed_service_type_ids"] = list(failed_ids)
+                checkpoint["total_variant_rows"] = len(all_variants)
+                _update_checkpoint(run_id, checkpoint)
                 continue
 
         # Detect conflicts
@@ -1078,10 +1741,10 @@ def extract_service_type_variants(
         # Finalize checkpoint
         checkpoint["status"] = "completed"
         checkpoint["completed_at"] = _utc_now()
+        checkpoint["processed_service_type_ids"] = list(processed_ids)
+        checkpoint["failed_service_type_ids"] = list(failed_ids)
+        checkpoint["total_variant_rows"] = len(all_variants)
         _update_checkpoint(run_id, checkpoint)
-
-        # Save diagnostics
-        recorder.save()
 
         summary = {
             "run_id": run_id,
@@ -1091,6 +1754,7 @@ def extract_service_type_variants(
             "total_variant_rows": len(all_variants),
             "clean_variants": len(clean_variants),
             "conflict_variants": len(conflict_variants),
+            "smoke_mode": smoke_mode,
             "output_paths": {
                 "latest_csv": str(paths["latest_csv"]),
                 "latest_xlsx": str(paths["latest_xlsx"]),
@@ -1104,8 +1768,44 @@ def extract_service_type_variants(
         _emit(f"Extraction complete! Summary: {summary}", on_progress)
 
         return summary
-
+    except Exception as exc:
+        fatal_error = str(exc)
+        recorder.event(
+            "ERROR",
+            "extract_run",
+            "RUN_FAILED",
+            fatal_error,
+            context={"traceback": traceback.format_exc()},
+        )
+        if driver:
+            screenshot, html = _capture_assist_failure_artifacts(
+                driver,
+                recorder,
+                prefix="run_failure",
+                reason=fatal_error,
+            )
+            recorder.checker(
+                "extract_run",
+                "FAIL",
+                "CHK_VARIANT_EXTRACTION_RUN",
+                fatal_error,
+                url=_normalize_text(getattr(driver, "current_url", "")),
+                screenshot=screenshot,
+                html=html,
+            )
+        checkpoint["status"] = "failed"
+        checkpoint["completed_at"] = _utc_now()
+        checkpoint["error"] = fatal_error
+        checkpoint["processed_service_type_ids"] = list(processed_ids)
+        checkpoint["failed_service_type_ids"] = list(failed_ids)
+        checkpoint["total_variant_rows"] = len(all_variants)
+        _update_checkpoint(run_id, checkpoint)
+        raise RuntimeError(f"Service Type variant extraction failed: {fatal_error}") from exc
     finally:
+        try:
+            recorder.save()
+        except Exception as save_exc:
+            log_message(f"Warning: could not persist diagnostics recorder output: {save_exc}")
         if driver:
             try:
                 driver.quit()
@@ -1160,6 +1860,9 @@ def discover_appointment_item_numbers(**kwargs) -> Dict[str, object]:
     new_kwargs["on_row"] = kwargs.get("on_row")
     new_kwargs["resume"] = kwargs.get("resume", True)
     new_kwargs["force_refresh"] = kwargs.get("force_refresh", False)
+    new_kwargs["smoke_mode"] = kwargs.get("smoke_mode", False)
+    new_kwargs["smoke_service_type_id"] = kwargs.get("smoke_service_type_id", "")
+    new_kwargs["smoke_service_type_label"] = kwargs.get("smoke_service_type_label", "")
 
     result = extract_service_type_variants(**new_kwargs)
 

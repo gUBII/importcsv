@@ -99,8 +99,8 @@ class _FakeElement:
 class _FakeInput(_FakeElement):
     """Mock input element."""
 
-    def __init__(self, value=""):
-        super().__init__(text=value, tag_name="input")
+    def __init__(self, value="", attributes=None):
+        super().__init__(text=value, tag_name="input", attributes=attributes)
         self._value = value
         self._sent_keys = []
 
@@ -209,6 +209,17 @@ def test_diagnostics_recorder_save(tmp_path):
     assert checkers[0]["code"] == "CHK_TEST"
 
 
+def test_diagnostics_recorder_save_writes_empty_checkers_file(tmp_path):
+    """Recorder must emit checkers.csv even when no checker rows exist."""
+    recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
+    recorder.event("INFO", "collect_options", "TEST_EVENT", "Test message")
+    recorder.save()
+    assert (tmp_path / "checkers.csv").exists()
+    with open(tmp_path / "checkers.csv") as f:
+        checkers = list(csv.DictReader(f))
+    assert checkers == []
+
+
 # =============================================================================
 # TESTS: VARIANT TABLE EXTRACTION
 # =============================================================================
@@ -238,9 +249,8 @@ def test_extract_variant_table_rows_success(fake_driver, tmp_path):
     table = _FakeElement()
     table._children = [row1, row2]
 
-    # Mock driver to return table via XPath
-    fake_driver._elements[("xpath", "//table")] = table
-    fake_driver._elements[("xpath", ".//tr[td or @role='row']")] = [row1, row2]
+    # Mock driver to return table via fallback CSS selector
+    fake_driver._elements[("css selector", "table")] = table
 
     # Extract
     variants = discovery._extract_variant_table_rows(fake_driver, recorder)
@@ -277,27 +287,26 @@ def test_select_assist_option_full_label(fake_driver, tmp_path):
     """Test option selection using full label strategy."""
     recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
 
-    # Create mock input and options
-    input_elem = _FakeInput("")
+    # Create mock combobox and options
+    input_elem = _FakeInput(attributes={"role": "combobox", "aria-haspopup": "true"})
     option_elem = _FakeElement("Support Work", attributes={"data-value": "7358"})
-    hidden_elem = _FakeInput(value="")
 
-    fake_driver.set_element("id", "service_type_select", input_elem)
-    fake_driver.set_element("id", "service_type_select_hidden", hidden_elem)
-    fake_driver.set_element("xpath", "//div[@role='option']", option_elem)
+    fake_driver.set_element(
+        "css selector",
+        "input[role='combobox'][aria-haspopup='true']",
+        input_elem,
+    )
+    fake_driver.set_element("css selector", "[role='option']", [option_elem])
 
     # Try selection
     success = discovery._select_assist_option_with_retries(
         fake_driver,
-        "service_type_select",
         "7358",
         "Support Work",
         recorder,
     )
 
-    # Success should be recorded (even if hidden value doesn't match, we return True on click)
-    # In this mock setup we should get True because we find and click the element
-    assert success or True  # Either success or mocked behavior
+    assert success is True
 
 
 def test_select_assist_option_all_fail(fake_driver, tmp_path):
@@ -307,7 +316,6 @@ def test_select_assist_option_all_fail(fake_driver, tmp_path):
     # Don't set any mock elements, so selection will fail
     success = discovery._select_assist_option_with_retries(
         fake_driver,
-        "service_type_select",
         "7358",
         "Nonexistent Option",
         recorder,
@@ -603,9 +611,33 @@ def test_variant_column_schema():
         "Code",
         "Code (Raw)",
         "Unit",
+        "Status",
+        "Error Reason",
         "Conflict",
         "Probe Client ID",
         "Source URL",
         "Captured At (UTC)",
     ]
     assert discovery.VARIANT_COLUMNS == expected_columns
+
+
+def test_discover_appointment_item_numbers_forwards_smoke_kwargs(monkeypatch):
+    """Legacy wrapper should forward smoke-mode parameters."""
+    captured = {}
+
+    def _fake_extract(**kwargs):
+        captured.update(kwargs)
+        return {"output_paths": {}, "total_variant_rows": 0}
+
+    monkeypatch.setattr(discovery, "extract_service_type_variants", _fake_extract)
+    discovery.discover_appointment_item_numbers(
+        probe_client_id="92108",
+        smoke_mode=True,
+        smoke_service_type_id="7358",
+        smoke_service_type_label="Night",
+    )
+
+    assert captured["probe_client_ids"] == "92108"
+    assert captured["smoke_mode"] is True
+    assert captured["smoke_service_type_id"] == "7358"
+    assert captured["smoke_service_type_label"] == "Night"
