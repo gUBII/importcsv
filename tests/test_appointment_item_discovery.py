@@ -135,10 +135,24 @@ class _FakeInput(_FakeElement):
     def clear(self):
         self._value = ""
 
-    def send_keys(self, keys):
-        self._sent_keys.append(keys)
-        if keys not in ("\ue00d", "\ue007"):  # ESCAPE / ENTER
-            self._value += str(keys)
+    def send_keys(self, *keys):
+        control_down = False
+        for key in keys:
+            self._sent_keys.append(key)
+            if key in (discovery.Keys.CONTROL, discovery.Keys.COMMAND):
+                control_down = True
+                continue
+            if control_down and str(key).lower() == "a":
+                self._value = ""
+                control_down = False
+                continue
+            control_down = False
+            if key == discovery.Keys.BACKSPACE:
+                self._value = self._value[:-1]
+                continue
+            if key in (discovery.Keys.ESCAPE, discovery.Keys.ENTER):
+                continue
+            self._value += str(key)
 
 
 # =============================================================================
@@ -249,7 +263,7 @@ def test_diagnostics_recorder_save_writes_empty_checkers_file(tmp_path):
 
 
 def test_extract_variant_table_rows_success(fake_driver, tmp_path):
-    """Test extraction via the six fixed data-cy rate/code pairs."""
+    """Test extraction via dynamic data-cy pairing for the known six prefixes."""
     recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
 
     expected = {
@@ -260,17 +274,13 @@ def test_extract_variant_table_rows_success(fake_driver, tmp_path):
         "sunday": ("127.43", "01_805_0115_1_1"),
         "ph": ("156.03", "01_806_0115_1_1"),
     }
+    rate_inputs = []
+    code_inputs = []
     for prefix, (rate, code) in expected.items():
-        fake_driver.set_element(
-            "css selector",
-            f"input[data-cy='{prefix}_rate-input']",
-            [_FakeInput(value=rate, attributes={"data-cy": f"{prefix}_rate-input"})],
-        )
-        fake_driver.set_element(
-            "css selector",
-            f"input[data-cy='{prefix}_code-input']",
-            [_FakeInput(value=code, attributes={"data-cy": f"{prefix}_code-input"})],
-        )
+        rate_inputs.append(_FakeInput(value=rate, attributes={"data-cy": f"{prefix}_rate-input"}))
+        code_inputs.append(_FakeInput(value=code, attributes={"data-cy": f"{prefix}_code-input"}))
+    fake_driver.set_element("css selector", "input[data-cy$='_rate-input']", rate_inputs)
+    fake_driver.set_element("css selector", "input[data-cy$='_code-input']", code_inputs)
 
     # Extract
     variants = discovery._extract_variant_table_rows(fake_driver, recorder)
@@ -284,6 +294,7 @@ def test_extract_variant_table_rows_success(fake_driver, tmp_path):
     assert by_label["Sunday"]["Rate"] == "127.43"
     assert by_label["Public Holiday"]["Rate"] == "156.03"
     assert all(row["Unit"] == "/ hour" for row in variants)
+    assert all(row["Status"] == "PASS" for row in variants)
 
 
 def test_extract_variant_table_missing(fake_driver, tmp_path):
@@ -299,6 +310,47 @@ def test_extract_variant_table_missing(fake_driver, tmp_path):
     with open(tmp_path / "events.jsonl") as f:
         events = [json.loads(line) for line in f]
     assert any("VARIANT_TABLE_MISSING" in e["code"] for e in events)
+
+
+def test_extract_variant_table_rows_dynamic_does_not_require_six_pairs(fake_driver, tmp_path):
+    """Dynamic extraction should return discovered pairs even when count != 6."""
+    recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
+
+    day_rate = _FakeInput(value="78.81", attributes={"data-cy": "day_rate-input"})
+    day_code = _FakeInput(value="01_803_0115_1_1", attributes={"data-cy": "day_code-input"})
+    travel_rate = _FakeInput(value="15.50", attributes={"data-cy": "travel_rate-input"})
+    # Missing travel_code-input on purpose.
+
+    fake_driver.set_element("css selector", "input[data-cy$='_rate-input']", [day_rate, travel_rate])
+    fake_driver.set_element("css selector", "input[data-cy$='_code-input']", [day_code])
+
+    variants = discovery._extract_variant_table_rows(fake_driver, recorder)
+
+    assert len(variants) == 2
+    day_row = next(v for v in variants if v["Service Variant Label"] == "Weekday Daytime/Individual Code")
+    travel_row = next(v for v in variants if v["Service Variant Label"] == "Travel")
+    assert day_row["Status"] == "PASS"
+    assert travel_row["Status"] == "FAIL"
+    assert "prefix=travel" in travel_row["Error Reason"]
+
+
+def test_variant_fingerprint_includes_selected_label(fake_driver):
+    """Fingerprint should change when selected combobox label changes even with same values."""
+    selected_input = _FakeInput(value="Label A", attributes={"role": "combobox"})
+    day_rate = _FakeInput(value="78.81", attributes={"data-cy": "day_rate-input"})
+    day_code = _FakeInput(value="01_803_0115_1_1", attributes={"data-cy": "day_code-input"})
+    fake_driver.set_element("xpath", discovery.SERVICE_TYPE_INPUT_XPATH, [selected_input])
+    fake_driver.set_element("css selector", "input[data-cy$='_rate-input']", [day_rate])
+    fake_driver.set_element("css selector", "input[data-cy$='_code-input']", [day_code])
+
+    before = discovery._read_variant_fingerprint(fake_driver)
+    selected_input._value = "Label B"
+    after = discovery._read_variant_fingerprint(fake_driver)
+
+    assert before != after
+    assert before[0][0] == "__selected_label__"
+    assert before[0][1] == "Label A"
+    assert after[0][1] == "Label B"
 
 
 # =============================================================================
@@ -533,6 +585,7 @@ def test_resume_skips_previously_failed_service_types_unless_force_refresh(tmp_p
     monkeypatch.setattr(discovery, "_load_service_types_from_reference_index", lambda _rec: {"7358": "(SIL) Active Night-Time"})
     monkeypatch.setattr(discovery, "_collect_assist_options", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(discovery, "_select_assist_option_with_retries", lambda *_args, **_kwargs: select_calls.append("called") or True)
+    monkeypatch.setattr(discovery, "_read_selected_service_type_label", lambda *_args, **_kwargs: "(SIL) Active Night-Time")
     monkeypatch.setattr(discovery, "_wait_for_fingerprint_change", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(discovery, "_wait_for_variant_values_ready", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(discovery, "_extract_variant_table_rows", lambda *_args, **_kwargs: _sample_variant_rows())

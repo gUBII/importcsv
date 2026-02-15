@@ -740,6 +740,24 @@ def _wait_for_combobox_closed(input_el, timeout: float = 5.0) -> bool:
     return False
 
 
+def _normalized_label_for_compare(value: str) -> str:
+    """Normalize label text for deterministic equality checks."""
+    return _normalize_text(value).casefold()
+
+
+def _labels_match(expected_label: str, actual_label: str) -> bool:
+    """Strict normalized label equality."""
+    return _normalized_label_for_compare(expected_label) == _normalized_label_for_compare(actual_label)
+
+
+def _read_selected_service_type_label(driver) -> str:
+    """Read selected Service Type label from combobox value."""
+    input_el = _find_service_type_input(driver, require_interactable=False)
+    if not input_el:
+        return ""
+    return _normalize_text(input_el.get_attribute("value") or getattr(input_el, "text", ""))
+
+
 def _clear_and_type(driver, input_el, text: str):
     """Clear combobox and type query text."""
     _focus_service_type_input(driver, input_el)
@@ -790,35 +808,57 @@ def _select_service_type_option(
     *,
     allow_contains: bool = False,
 ) -> bool:
-    """Select service type by type+enter, then exact option-click fallback."""
+    """Select service type with verified combobox value."""
     input_el = _find_service_type_input(driver, require_interactable=True)
     if not input_el:
         input_el = _find_service_type_input(driver, require_interactable=False)
     if not input_el:
         return False
 
+    expected = _normalize_text(expected_label)
+    if not expected:
+        return False
+
+    # Preferred path: type-to-filter and click visible option text.
     _clear_and_type(driver, input_el, query_text)
-    _wait_for_listbox_open(driver, timeout=4.0)
+    if _wait_for_listbox_open(driver, timeout=4.0):
+        clicked = _click_matching_service_option(driver, expected, allow_contains=False)
+        if not clicked and allow_contains:
+            clicked = _click_matching_service_option(driver, expected, allow_contains=True)
+        if clicked and _wait_for_combobox_closed(input_el, timeout=4.0):
+            selected = _read_selected_service_type_label(driver)
+            if _labels_match(expected, selected):
+                return True
+            recorder.event(
+                "WARN",
+                "select_option",
+                "SERVICE_TYPE_SELECTED_LABEL_MISMATCH",
+                f"Expected '{expected}' but selected '{selected}' after option click.",
+            )
+
+    # Fallback path: Enter first filtered option, then verify value.
+    _clear_and_type(driver, input_el, query_text)
+    _wait_for_listbox_open(driver, timeout=3.0)
     try:
         input_el.send_keys(Keys.ENTER)
     except Exception:
         pass
-
     if _wait_for_combobox_closed(input_el, timeout=4.0):
-        return True
-
-    # Fallback to explicit option click by visible text.
-    _clear_and_type(driver, input_el, query_text)
-    if _wait_for_listbox_open(driver, timeout=3.0):
-        clicked = _click_matching_service_option(driver, expected_label, allow_contains=allow_contains)
-        if clicked and _wait_for_combobox_closed(input_el, timeout=4.0):
+        selected = _read_selected_service_type_label(driver)
+        if _labels_match(expected, selected):
             return True
+        recorder.event(
+            "WARN",
+            "select_option",
+            "SERVICE_TYPE_SELECTED_LABEL_MISMATCH",
+            f"Expected '{expected}' but selected '{selected}' after Enter fallback.",
+        )
 
     recorder.event(
         "WARN",
         "select_option",
-        "SERVICE_TYPE_SELECT_NOT_CLOSED",
-        f"Combobox did not settle for '{expected_label}'",
+        "SERVICE_TYPE_SELECT_NOT_VERIFIED",
+        f"Could not verify combobox value for '{expected}'",
     )
     return False
 
@@ -838,11 +878,47 @@ def _variant_input_elements(driver, prefix: str) -> Tuple[Optional[Any], Optiona
     return rate_el, code_el
 
 
+def _variant_pairs_by_prefix(driver) -> List[Tuple[str, Optional[Any], Optional[Any]]]:
+    """Enumerate available variant rate/code inputs and pair by data-cy prefix."""
+    rate_by_prefix: Dict[str, Any] = {}
+    code_by_prefix: Dict[str, Any] = {}
+
+    try:
+        rate_inputs = driver.find_elements(By.CSS_SELECTOR, "input[data-cy$='_rate-input']")
+    except Exception:
+        rate_inputs = []
+    for rate_el in rate_inputs:
+        data_cy = _normalize_text(rate_el.get_attribute("data-cy"))
+        if data_cy.endswith("_rate-input"):
+            prefix = data_cy[: -len("_rate-input")]
+            if prefix and prefix not in rate_by_prefix:
+                rate_by_prefix[prefix] = rate_el
+
+    try:
+        code_inputs = driver.find_elements(By.CSS_SELECTOR, "input[data-cy$='_code-input']")
+    except Exception:
+        code_inputs = []
+    for code_el in code_inputs:
+        data_cy = _normalize_text(code_el.get_attribute("data-cy"))
+        if data_cy.endswith("_code-input"):
+            prefix = data_cy[: -len("_code-input")]
+            if prefix and prefix not in code_by_prefix:
+                code_by_prefix[prefix] = code_el
+
+    all_prefixes = set(rate_by_prefix.keys()) | set(code_by_prefix.keys())
+    known_order = [prefix for prefix in VARIANT_PREFIXES if prefix in all_prefixes]
+    extra_order = sorted(prefix for prefix in all_prefixes if prefix not in VARIANT_PREFIXES)
+    ordered_prefixes = known_order + extra_order
+    return [
+        (prefix, rate_by_prefix.get(prefix), code_by_prefix.get(prefix))
+        for prefix in ordered_prefixes
+    ]
+
+
 def _read_variant_fingerprint(driver) -> Tuple[Tuple[str, str, str], ...]:
-    """Fingerprint current 6-pair values to detect stale selections."""
-    fp: List[Tuple[str, str, str]] = []
-    for prefix in VARIANT_PREFIXES:
-        rate_el, code_el = _variant_input_elements(driver, prefix)
+    """Fingerprint selected label + available variant values to detect stale selections."""
+    fp: List[Tuple[str, str, str]] = [("__selected_label__", _read_selected_service_type_label(driver), "")]
+    for prefix, rate_el, code_el in _variant_pairs_by_prefix(driver):
         rate_val = _normalize_text(rate_el.get_attribute("value")) if rate_el else ""
         code_val = _normalize_text(code_el.get_attribute("value")) if code_el else ""
         fp.append((prefix, rate_val, code_val))
@@ -852,13 +928,17 @@ def _read_variant_fingerprint(driver) -> Tuple[Tuple[str, str, str], ...]:
 def _wait_for_fingerprint_change(
     driver,
     before: Tuple[Tuple[str, str, str], ...],
+    expected_label: str = "",
     timeout: float = 6.0,
 ) -> bool:
-    """Wait until variant fingerprint changes."""
+    """Wait until fingerprint changes, or selected label is verified."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         after = _read_variant_fingerprint(driver)
         if after != before:
+            time.sleep(0.35)
+            return True
+        if expected_label and _labels_match(expected_label, _read_selected_service_type_label(driver)):
             time.sleep(0.35)
             return True
         time.sleep(0.15)
@@ -866,25 +946,31 @@ def _wait_for_fingerprint_change(
 
 
 def _wait_for_variant_values_ready(driver, timeout: float = 2.5) -> bool:
-    """Wait until all fixed variant rate/code pairs are populated."""
+    """Wait until discovered variant pairs have populated values."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        all_ready = True
-        for prefix in VARIANT_PREFIXES:
-            rate_el, code_el = _variant_input_elements(driver, prefix)
-            rate_val = _normalize_text(rate_el.get_attribute("value")) if rate_el else ""
-            code_val = _normalize_text(code_el.get_attribute("value")) if code_el else ""
-            if not rate_val or not code_val:
-                all_ready = False
-                break
-        if all_ready:
-            return True
+        pairs = _variant_pairs_by_prefix(driver)
+        if pairs:
+            all_ready = True
+            for _prefix, rate_el, code_el in pairs:
+                if not rate_el or not code_el:
+                    all_ready = False
+                    break
+                rate_val = _normalize_text(rate_el.get_attribute("value"))
+                code_val = _normalize_text(code_el.get_attribute("value"))
+                if not rate_val or not code_val:
+                    all_ready = False
+                    break
+            if all_ready:
+                return True
         time.sleep(0.15)
     return False
 
 
 def _derive_variant_label(driver, rate_el, prefix: str) -> str:
     """Derive label from nearest row wrapper text before '$', with static fallback."""
+    if rate_el is None:
+        return VARIANT_LABEL_FALLBACK.get(prefix, prefix.replace("_", " ").title())
     script = """
     const input = arguments[0];
     let node = input;
@@ -909,11 +995,13 @@ def _derive_variant_label(driver, rate_el, prefix: str) -> str:
         label = ""
     if label.lower().startswith("service rate code"):
         label = ""
-    return label or VARIANT_LABEL_FALLBACK.get(prefix, prefix.title())
+    return label or VARIANT_LABEL_FALLBACK.get(prefix, prefix.replace("_", " ").title())
 
 
 def _derive_unit_text(driver, rate_el) -> str:
     """Extract '/ hour' unit marker near rate input."""
+    if rate_el is None:
+        return ""
     script = """
     const input = arguments[0];
     let node = input;
@@ -932,38 +1020,79 @@ def _derive_unit_text(driver, rate_el) -> str:
 
 def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[Dict]:
     """
-    Extract fixed 6 Service Type variant pairs from data-cy inputs.
+    Extract variant rows dynamically from available data-cy rate/code pairs.
+    Partial rows are returned with row-level FAIL reasons.
     """
     rows: List[Dict[str, str]] = []
-    for prefix in VARIANT_PREFIXES:
-        rate_el, code_el = _variant_input_elements(driver, prefix)
-        if not rate_el or not code_el:
-            recorder.event(
-                "WARN",
-                "extract_variants",
-                CHECKER_VARIANT_TABLE_MISSING,
-                f"Missing variant input pair for prefix={prefix}",
-            )
-            return []
+    pairs = _variant_pairs_by_prefix(driver)
+    if not pairs:
+        recorder.event(
+            "WARN",
+            "extract_variants",
+            CHECKER_VARIANT_TABLE_MISSING,
+            "No variant input pairs found (NO_VARIANTS_GRID).",
+        )
+        return []
 
-        rate_raw = _normalize_text(rate_el.get_attribute("value"))
-        code_raw = _normalize_text(code_el.get_attribute("value"))
+    extra_prefixes = [prefix for prefix, _, _ in pairs if prefix not in VARIANT_PREFIXES]
+    if extra_prefixes:
+        recorder.event(
+            "WARN",
+            "extract_variants",
+            "EXTRA_VARIANT_PREFIXES",
+            f"Detected non-standard variant prefixes: {extra_prefixes}",
+            context={"prefixes": extra_prefixes},
+        )
+
+    for prefix, rate_el, code_el in pairs:
+        rate_raw = _normalize_text(rate_el.get_attribute("value")) if rate_el else ""
+        code_raw = _normalize_text(code_el.get_attribute("value")) if code_el else ""
+        label = _derive_variant_label(driver, rate_el, prefix)
+        unit = _derive_unit_text(driver, rate_el)
+
+        missing_fields: List[str] = []
+        if not rate_el:
+            missing_fields.append("rate_input")
+        if not code_el:
+            missing_fields.append("code_input")
+        if rate_el and not rate_raw:
+            missing_fields.append("rate")
+        if code_el and not code_raw:
+            missing_fields.append("code")
+
+        row_status = "PASS"
+        row_error = ""
+        if missing_fields:
+            row_status = "FAIL"
+            row_error = (
+                f"Missing {', '.join(missing_fields)} for prefix={prefix}"
+                f" ({label or prefix})."
+            )
+
         rows.append(
             {
-                "Service Variant Label": _derive_variant_label(driver, rate_el, prefix),
+                "Service Variant Label": label,
                 "Rate": _coerce_rate_text(rate_raw),
                 "Rate (Raw)": rate_raw,
                 "Code": _normalize_code_text(code_raw),
                 "Code (Raw)": code_raw,
-                "Unit": _derive_unit_text(driver, rate_el),
+                "Unit": unit,
+                "Status": row_status,
+                "Error Reason": row_error,
+                "_prefix": prefix,
             }
         )
 
+    fail_count = sum(1 for row in rows if _normalize_text(row.get("Status", "PASS")).upper() == "FAIL")
     recorder.checker(
         "extract_variants",
-        "PASS",
+        "PASS" if fail_count == 0 else "FAIL",
         CHECKER_VARIANT_TABLE_EXTRACT,
-        f"Extracted {len(rows)} rows via fixed variant input pairs",
+        (
+            f"Extracted {len(rows)} variant rows via dynamic input pairing"
+            if fail_count == 0
+            else f"Extracted {len(rows)} variant rows; {fail_count} row(s) incomplete"
+        ),
         option_count=len(rows),
         url=_normalize_text(getattr(driver, "current_url", "")),
     )
@@ -1367,6 +1496,8 @@ def _build_variant_record(
     source_url: str,
 ) -> Dict[str, str]:
     code_value = variant.get("Code", "")
+    status_value = _normalize_text(variant.get("Status", "PASS")).upper() or "PASS"
+    error_value = _normalize_text(variant.get("Error Reason", ""))
     return {
         "Parent Service Type ID": service_type_id,
         "Parent Service Type Label": service_type_label,
@@ -1379,9 +1510,9 @@ def _build_variant_record(
         "Code (Raw)": variant.get("Code (Raw)", ""),
         "Item Number": code_value,
         "Unit": variant.get("Unit", ""),
-        "Status": "PASS",
-        "Error Reason": "",
-        "Conflict": "UNKNOWN",
+        "Status": status_value,
+        "Error Reason": error_value,
+        "Conflict": "UNKNOWN" if status_value == "PASS" else "N/A",
         "Conflict Detail": "",
         "Probe Client ID": probe_client_id,
         "Source URL": source_url,
@@ -1704,48 +1835,60 @@ def extract_service_type_variants(
                             _update_checkpoint(run_id, checkpoint)
                             continue
 
-                        if not _wait_for_fingerprint_change(driver, before_fp, timeout=6.0):
-                            if _wait_for_variant_values_ready(driver, timeout=1.5):
-                                recorder.event(
-                                    "WARN",
-                                    "extract_variants",
-                                    "FINGERPRINT_UNCHANGED_VALUES_READY",
-                                    "Fingerprint unchanged after selection; proceeding because variant values are populated.",
-                                    client_id=probe_id,
-                                    url=_normalize_text(getattr(driver, "current_url", "")),
-                                )
-                            else:
-                                reason = "Variant fingerprint did not change after Service Type selection."
-                                screenshot, html = _capture_assist_failure_artifacts(
-                                    driver,
-                                    recorder,
-                                    prefix=f"stale_fingerprint_{st_value}_{probe_id}",
-                                    reason=reason,
-                                )
-                                recorder.checker(
-                                    "extract_variants",
-                                    "FAIL",
-                                    CHECKER_VARIANT_TABLE_EMPTY,
-                                    reason,
-                                    client_id=probe_id,
-                                    url=_normalize_text(getattr(driver, "current_url", "")),
-                                    screenshot=screenshot,
-                                    html=html,
-                                )
-                                failure_row = _build_failure_record(
-                                    service_type_id=st_value,
-                                    service_type_label=st_label,
-                                    probe_client_id=probe_id,
-                                    source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
-                                    reason=reason,
-                                )
-                                all_variants.append(failure_row)
-                                _append_to_checkpoint_csv(run_id, [failure_row])
-                                if on_row:
-                                    on_row(failure_row)
-                                checkpoint["total_variant_rows"] = len(all_variants)
-                                _update_checkpoint(run_id, checkpoint)
-                                continue
+                        selected_label = _read_selected_service_type_label(driver)
+                        if not _labels_match(st_label, selected_label):
+                            reason = (
+                                "Service Type selection mismatch: "
+                                f"expected '{st_label}', got '{selected_label or '<empty>'}'."
+                            )
+                            screenshot, html = _capture_assist_failure_artifacts(
+                                driver,
+                                recorder,
+                                prefix=f"service_type_label_mismatch_{st_value}_{probe_id}",
+                                reason=reason,
+                            )
+                            recorder.checker(
+                                "service_type_select",
+                                "FAIL",
+                                CHECKER_SERVICE_TYPE_SELECT,
+                                reason,
+                                client_id=probe_id,
+                                url=_normalize_text(getattr(driver, "current_url", "")),
+                                selector=SERVICE_TYPE_INPUT_XPATH,
+                                screenshot=screenshot,
+                                html=html,
+                            )
+                            failure_row = _build_failure_record(
+                                service_type_id=st_value,
+                                service_type_label=st_label,
+                                probe_client_id=probe_id,
+                                source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
+                                reason=reason,
+                            )
+                            all_variants.append(failure_row)
+                            _append_to_checkpoint_csv(run_id, [failure_row])
+                            if on_row:
+                                on_row(failure_row)
+                            checkpoint["total_variant_rows"] = len(all_variants)
+                            _update_checkpoint(run_id, checkpoint)
+                            continue
+
+                        if not _wait_for_fingerprint_change(
+                            driver,
+                            before_fp,
+                            expected_label=st_label,
+                            timeout=6.0,
+                        ):
+                            recorder.event(
+                                "WARN",
+                                "extract_variants",
+                                "FINGERPRINT_UNCHANGED",
+                                "Variant fingerprint unchanged after selection; continuing because combobox value is verified.",
+                                client_id=probe_id,
+                                url=_normalize_text(getattr(driver, "current_url", "")),
+                                context={"service_type_label": st_label},
+                            )
+                        time.sleep(0.3)
 
                     if not _wait_for_variant_values_ready(driver, timeout=2.5):
                         recorder.event(
@@ -1758,8 +1901,8 @@ def extract_service_type_variants(
                         )
 
                     variants = _extract_variant_table_rows(driver, recorder)
-                    if len(variants) != 6:
-                        reason = f"Expected 6 variant pairs, got {len(variants)}."
+                    if not variants:
+                        reason = "NO_VARIANTS_GRID: no variant input pairs found after verified Service Type selection."
                         screenshot, html = _capture_assist_failure_artifacts(
                             driver,
                             recorder,
@@ -1790,11 +1933,22 @@ def extract_service_type_variants(
                         checkpoint["total_variant_rows"] = len(all_variants)
                         _update_checkpoint(run_id, checkpoint)
                         continue
-                    if any(
-                        not _normalize_text(v.get("Rate", "")) or not _normalize_text(v.get("Code", ""))
+
+                    incomplete_variants = [
+                        v
                         for v in variants
-                    ):
-                        reason = "Variant values incomplete after extraction (missing rate/code in one or more rows)."
+                        if _normalize_text(v.get("Status", "PASS")).upper() == "FAIL"
+                    ]
+                    if incomplete_variants:
+                        details = "; ".join(
+                            _normalize_text(v.get("Error Reason", ""))
+                            for v in incomplete_variants
+                            if _normalize_text(v.get("Error Reason", ""))
+                        )
+                        reason = (
+                            "Variant values incomplete for one or more rows."
+                            + (f" {details}" if details else "")
+                        )
                         screenshot, html = _capture_assist_failure_artifacts(
                             driver,
                             recorder,
@@ -1811,21 +1965,6 @@ def extract_service_type_variants(
                             screenshot=screenshot,
                             html=html,
                         )
-                        failure_row = _build_failure_record(
-                            service_type_id=st_value,
-                            service_type_label=st_label,
-                            probe_client_id=probe_id,
-                            source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
-                            reason=reason,
-                        )
-                        all_variants.append(failure_row)
-                        _append_to_checkpoint_csv(run_id, [failure_row])
-                        if on_row:
-                            on_row(failure_row)
-                        checkpoint["total_variant_rows"] = len(all_variants)
-                        _update_checkpoint(run_id, checkpoint)
-                        continue
-
                     variant_records: List[Dict[str, str]] = []
                     for variant in variants:
                         record = _build_variant_record(
@@ -1843,7 +1982,10 @@ def extract_service_type_variants(
                     all_variants.extend(variant_records)
                     checkpoint["total_variant_rows"] = len(all_variants)
                     _update_checkpoint(run_id, checkpoint)
-                    service_pass = True
+                    service_pass = all(
+                        _normalize_text(r.get("Status", "PASS")).upper() == "PASS"
+                        for r in variant_records
+                    )
                     _emit(f"  → extracted {len(variants)} variants (probe {probe_id})", on_progress)
                 except Exception as e:
                     reason = f"Exception during Service Type extraction: {e}"

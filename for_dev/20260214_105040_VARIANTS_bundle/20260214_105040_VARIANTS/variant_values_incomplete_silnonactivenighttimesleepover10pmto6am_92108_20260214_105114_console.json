@@ -1,0 +1,14 @@
+[
+  {
+    "level": "SEVERE",
+    "message": "https://tp1.com.au/client-details.asp?eid=92108&BREAKDOWN_SHOW_APPTS=yes&wide1=yes 47:29 Uncaught TypeError: $(...).fancybox is not a function",
+    "source": "javascript",
+    "timestamp": 1771066244930
+  },
+  {
+    "level": "SEVERE",
+    "message": "https://tp1.com.au/client-details.asp?eid=92108&BREAKDOWN_SHOW_APPTS=yes&wide1=yes 47:29 Uncaught TypeError: $(...).fancybox is not a function",
+    "source": "javascript",
+    "timestamp": 1771066244934
+  }
+]

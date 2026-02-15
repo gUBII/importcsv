@@ -23,6 +23,9 @@ This runbook covers reliable extraction of Service Type variants from Assist / a
   - service input exists via primary XPath:
     - `//div[@data-cy='service_type_id-reload']/preceding::input[@role='combobox'][1]`
   - at least `day_rate-input` + `day_code-input` exist after sentinel selection.
+- Service Type selection is only considered valid when:
+  - combobox interaction completes (`aria-expanded=false`), and
+  - combobox `value` matches the intended Service Type label (normalized text equality).
 - Each Service Type outputs:
   - `Parent Service Type ID`
   - `Parent Service Type Label`
@@ -71,11 +74,13 @@ Current selector priorities:
 
 1. Service Type combobox:
    - `//div[@data-cy='service_type_id-reload']/preceding::input[@role='combobox'][1]`
-   - workflow: click -> clear -> type -> listbox wait -> Enter -> `aria-expanded=false`
-   - fallback: click exact `div[role='option']` label
+   - workflow: click -> clear -> type -> listbox wait -> click exact `div[role='option']` -> verify combobox value
+   - fallback: Enter first filtered option, then still verify combobox value equals expected label
 2. Variants grid:
-   - fixed pairs via `input[data-cy='{prefix}_rate-input']` + `input[data-cy='{prefix}_code-input']`
-   - prefixes: `day`, `eve`, `night`, `saturday`, `sunday`, `ph`
+   - dynamic pairing via:
+     - `input[data-cy$='_rate-input']`
+     - `input[data-cy$='_code-input']`
+   - pairs are matched by prefix (known order first: `day`, `eve`, `night`, `saturday`, `sunday`, `ph`; extra prefixes appended).
 
 When ATLAS reports DOM drift:
 
@@ -96,10 +101,21 @@ Per run directory:
 - HTML / PNG artifacts saved for:
   - TP1 Add Appointment route and iframe-switch failures
   - per-Service-Type selection failures
-  - stale fingerprint / missing variant input pairs
+  - missing variant inputs (`NO_VARIANTS_GRID`)
+  - incomplete variant values (row-level FAIL reasons)
   - unhandled run failures
 
 No early-failure path is allowed to skip diagnostics persistence.
+
+## Failure semantics
+
+- `NO_VARIANTS_GRID`:
+  - emitted when selection is verified but no `*_rate-input`/`*_code-input` pairs are present.
+  - extractor writes a parent FAIL row and continues.
+- Incomplete variant rows:
+  - extractor still emits discovered variant rows.
+  - rows missing `rate` and/or `code` are emitted as `Status=FAIL` with per-row `Error Reason` including prefix/label.
+  - conflict detection ignores FAIL rows.
 
 ## Validation against UI
 
