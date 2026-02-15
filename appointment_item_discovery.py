@@ -1611,6 +1611,7 @@ def extract_service_type_variants(
     smoke_mode: bool = False,
     smoke_service_type_id: str = "",
     smoke_service_type_label: str = "",
+    allow_missing_reference_index: bool = False,
 ) -> Dict[str, object]:
     """
     Extract all Service Type variants from Assist appointments form.
@@ -1626,6 +1627,8 @@ def extract_service_type_variants(
         smoke_mode: Restrict extraction to a single Service Type
         smoke_service_type_id: Optional Service Type ID to use in smoke mode
         smoke_service_type_label: Optional Service Type label to use in smoke mode
+        allow_missing_reference_index: Debug override that allows fallback to combobox options
+            when ServiceTypes_latest.csv/.xlsx is missing or empty.
 
     Returns:
         Summary dict with stats
@@ -1682,6 +1685,21 @@ def extract_service_type_variants(
     driver = None
     fatal_error = ""
     try:
+        # Hard gate: reference index is required for stable Service Type IDs.
+        all_service_types = _load_service_types_from_reference_index(recorder)
+        if not all_service_types and not allow_missing_reference_index:
+            missing_msg = (
+                "REFERENCE_INDEX_MISSING — run capture_service_type_rates first "
+                "to generate ~/LineItemRates/ServiceTypeTruth/reference/latest/ServiceTypes_latest.csv"
+            )
+            recorder.checker(
+                "service_type_index",
+                "FAIL",
+                "CHK_REFERENCE_INDEX_REQUIRED",
+                missing_msg,
+            )
+            raise RuntimeError(missing_msg)
+
         # Ensure Chrome driver
         ensure_credentials()
         download_dir = line_item_paths.downloads_dir()
@@ -1694,8 +1712,7 @@ def extract_service_type_variants(
         if not _open_assist_appointments_new(driver, recorder, preferred_probe):
             raise RuntimeError("Failed to open Assist appointment editor with interactable Service Type combobox.")
 
-        # Collect Service Types from exported index first, fallback to UI options.
-        all_service_types = _load_service_types_from_reference_index(recorder)
+        # Collect Service Types from exported index first, optional fallback to UI options.
         if not all_service_types:
             options = _collect_assist_options(driver, recorder)
             for opt in options:
@@ -2188,6 +2205,7 @@ def discover_appointment_item_numbers(**kwargs) -> Dict[str, object]:
     new_kwargs["smoke_mode"] = kwargs.get("smoke_mode", False)
     new_kwargs["smoke_service_type_id"] = kwargs.get("smoke_service_type_id", "")
     new_kwargs["smoke_service_type_label"] = kwargs.get("smoke_service_type_label", "")
+    new_kwargs["allow_missing_reference_index"] = kwargs.get("allow_missing_reference_index", False)
 
     result = extract_service_type_variants(**new_kwargs)
 

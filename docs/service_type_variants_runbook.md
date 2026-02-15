@@ -10,6 +10,9 @@ This runbook covers reliable extraction of Service Type variants from Assist / a
 - Reference Service Type export exists at:
   - `~/LineItemRates/ServiceTypeTruth/reference/latest/ServiceTypes_latest.csv`, or
   - `~/LineItemRates/ServiceTypeTruth/reference/latest/ServiceTypes_latest.xlsx`
+- Hard gate: variants extraction aborts with `REFERENCE_INDEX_MISSING` if this reference file is missing/empty.
+  - Run `capture_service_type_rates()` first to regenerate reference exports.
+  - Debug-only override: call extractor with `allow_missing_reference_index=True` to permit combobox fallback (not truth-ready IDs).
 - Probe client ID is known (required for TP1 Add Appointment nested-iframe route).
 
 ## What "success" means

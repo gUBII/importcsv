@@ -518,6 +518,35 @@ def test_checkpoint_resume_logic(tmp_path, monkeypatch):
     assert "7360" not in processed_ids
 
 
+def test_extract_requires_reference_index_by_default(tmp_path, monkeypatch):
+    """Variants extraction should fail fast when reference index is missing."""
+    called = {"driver": False}
+
+    monkeypatch.setattr(line_item_paths, "get_variant_paths", _mock_variant_paths(tmp_path))
+    monkeypatch.setattr(line_item_paths, "make_run_id", lambda _tag: "REQ_REF_RUN")
+    monkeypatch.setattr(line_item_paths, "ensure_structure", lambda: None)
+    monkeypatch.setattr(discovery, "_load_service_types_from_reference_index", lambda _rec: {})
+    monkeypatch.setattr(discovery, "ensure_credentials", lambda: None)
+    monkeypatch.setattr(discovery, "login", lambda _driver: None)
+
+    def _driver_factory(**_kwargs):
+        called["driver"] = True
+        return _FakeDriver(tmp_path)
+
+    monkeypatch.setattr(discovery, "build_chrome_driver", _driver_factory)
+
+    with pytest.raises(RuntimeError, match="REFERENCE_INDEX_MISSING"):
+        discovery.extract_service_type_variants(
+            headless=True,
+            probe_client_ids=["92108"],
+            resume=False,
+            force_refresh=True,
+            smoke_mode=False,
+        )
+
+    assert called["driver"] is False
+
+
 def _mock_variant_paths(tmp_path):
     """Build deterministic variant path map rooted in tmp_path."""
     def _paths(run_id):
