@@ -420,7 +420,7 @@ def test_switch_to_variants_capable_editor_nested_iframes(fake_driver, tmp_path,
     fake_driver.set_element("css selector", "input[data-cy='day_rate-input']", [day_rate])
     fake_driver.set_element("css selector", "input[data-cy='day_code-input']", [day_code])
 
-    monkeypatch.setattr(discovery, "_click_add_appointment", lambda _driver: True)
+    monkeypatch.setattr(discovery, "_click_add_appointment", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(discovery, "_select_service_type_option", lambda *args, **kwargs: True)
 
     class _Wait:

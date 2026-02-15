@@ -107,3 +107,19 @@ def test_login_failure_hint_detects_rejected_credentials():
         login_error_text="The Email and/or password you entered is incorrect. Please try again",
     )
     assert extractor._login_failure_hint(driver) == "TurnPoint rejected credentials (email/password incorrect)."
+
+
+def test_verify_reference_completeness_fails_when_truncated():
+    rows = [{"Service Type": "A", "ID": "1"}] * 10
+    try:
+        extractor._verify_reference_completeness(rows, min_rows=650)
+        raised = False
+    except RuntimeError as exc:
+        raised = True
+        assert "CHK_REFERENCE_INDEX_TRUNCATED" in str(exc)
+    assert raised is True
+
+
+def test_verify_reference_completeness_passes_when_threshold_met():
+    rows = [{"Service Type": "A", "ID": str(i)} for i in range(700)]
+    extractor._verify_reference_completeness(rows, min_rows=650)

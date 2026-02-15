@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from selenium.common.exceptions import ElementClickInterceptedException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -667,6 +668,99 @@ def _dismiss_blocking_modal_if_present(driver, recorder: DiagnosticsRecorder) ->
     return dismissed
 
 
+def _click_intercept_context(driver, element) -> Dict[str, str]:
+    """Best-effort overlay diagnostic at click point."""
+    try:
+        payload = driver.execute_script(
+            """
+            const el = arguments[0];
+            if (!el || !el.getBoundingClientRect) return {};
+            const r = el.getBoundingClientRect();
+            const x = Math.floor(r.left + (r.width / 2));
+            const y = Math.floor(r.top + (r.height / 2));
+            const top = document.elementFromPoint(x, y);
+            return {
+              x: String(x),
+              y: String(y),
+              targetTag: (el.tagName || ""),
+              targetClass: (el.className || ""),
+              targetText: ((el.innerText || "").trim().slice(0, 200)),
+              overlayTag: top ? (top.tagName || "") : "",
+              overlayId: top ? (top.id || "") : "",
+              overlayClass: top ? (top.className || "") : "",
+              overlayText: top ? ((top.innerText || "").trim().slice(0, 200)) : "",
+              overlayOuterHTML: top ? String(top.outerHTML || "").slice(0, 4000) : "",
+            };
+            """,
+            element,
+        )
+        if isinstance(payload, dict):
+            return {str(k): _normalize_text(v) for k, v in payload.items()}
+    except Exception:
+        pass
+    return {}
+
+
+def _safe_click(
+    driver,
+    element,
+    *,
+    recorder: Optional[DiagnosticsRecorder] = None,
+    step: str = "click",
+    code: str = "SAFE_CLICK",
+    selector: str = "",
+    timeout: float = 3.0,
+) -> bool:
+    """Robust click helper with scroll + JS fallback + intercept diagnostics."""
+    if element is None:
+        return False
+    try:
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center', inline:'nearest'});",
+            element,
+        )
+    except Exception:
+        pass
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _is_interactable(element):
+            break
+        time.sleep(0.1)
+
+    first_error: Exception = None
+    intercepted = False
+    try:
+        element.click()
+        return True
+    except Exception as exc:
+        first_error = exc
+        intercepted = isinstance(exc, ElementClickInterceptedException) or (
+            "click intercepted" in _normalize_text(str(exc)).lower()
+        )
+
+    # Retry with JS click after intercept/overlay issues.
+    try:
+        driver.execute_script("arguments[0].click();", element)
+        return True
+    except Exception as second_exc:
+        if recorder:
+            context = _click_intercept_context(driver, element)
+            context["first_error"] = _normalize_text(str(first_error)) if first_error else ""
+            context["second_error"] = _normalize_text(str(second_exc))
+            recorder.event(
+                "ERROR",
+                step,
+                f"{code}_{'INTERCEPTED' if intercepted else 'FAILED'}",
+                _normalize_text(str(second_exc))
+                or _normalize_text(str(first_error))
+                or "Click failed.",
+                selector=selector,
+                context=context,
+            )
+        return False
+
+
 def _find_service_type_input(driver, require_interactable: bool = True):
     """Locate the Service Type combobox using the Atlas-confirmed primary XPath."""
     candidates = []
@@ -694,12 +788,16 @@ def _find_service_type_input(driver, require_interactable: bool = True):
     return None
 
 
-def _focus_service_type_input(driver, input_el):
+def _focus_service_type_input(driver, input_el, recorder: Optional[DiagnosticsRecorder] = None):
     """Focus/open the service type control even when the inner input is not directly clickable."""
-    try:
-        input_el.click()
-    except Exception:
-        pass
+    _safe_click(
+        driver,
+        input_el,
+        recorder=recorder,
+        step="focus_service_type",
+        code="SERVICE_TYPE_INPUT_CLICK",
+        selector=SERVICE_TYPE_INPUT_XPATH,
+    )
     try:
         driver.execute_script(
             """
@@ -751,16 +849,49 @@ def _labels_match(expected_label: str, actual_label: str) -> bool:
 
 
 def _read_selected_service_type_label(driver) -> str:
-    """Read selected Service Type label from combobox value."""
+    """Read selected Service Type label from combobox input or visible single-value text."""
     input_el = _find_service_type_input(driver, require_interactable=False)
     if not input_el:
         return ""
-    return _normalize_text(input_el.get_attribute("value") or getattr(input_el, "text", ""))
+    value = _normalize_text(input_el.get_attribute("value") or getattr(input_el, "text", ""))
+    if value:
+        return value
+
+    # React-select often stores the selected label outside the actual input value.
+    try:
+        label = driver.execute_script(
+            """
+            const input = arguments[0];
+            if (!input) return "";
+            const direct =
+              input.closest("[data-cy='service_type_id-select']") ||
+              input.closest("#service_type_id") ||
+              input.closest(".form-input-select__control") ||
+              input.parentElement;
+            let scope = direct;
+            for (let i = 0; i < 5 && scope; i++) {
+              const node = scope.querySelector(".form-input-select__single-value")
+                || scope.querySelector("[class*='singleValue']")
+                || scope.querySelector("[class*='single-value']");
+              if (node && (node.innerText || "").trim()) {
+                return (node.innerText || "").trim();
+              }
+              scope = scope.parentElement;
+            }
+            const globalNode = document.querySelector("[data-cy='service_type_id-select'] .form-input-select__single-value")
+              || document.querySelector("#service_type_id .form-input-select__single-value");
+            return globalNode ? (globalNode.innerText || "").trim() : "";
+            """,
+            input_el,
+        )
+        return _normalize_text(label)
+    except Exception:
+        return ""
 
 
-def _clear_and_type(driver, input_el, text: str):
+def _clear_and_type(driver, input_el, text: str, recorder: Optional[DiagnosticsRecorder] = None):
     """Clear combobox and type query text."""
-    _focus_service_type_input(driver, input_el)
+    _focus_service_type_input(driver, input_el, recorder=recorder)
     try:
         input_el.clear()
     except Exception:
@@ -774,7 +905,13 @@ def _clear_and_type(driver, input_el, text: str):
         input_el.send_keys(text)
 
 
-def _click_matching_service_option(driver, expected_label: str, allow_contains: bool = False) -> bool:
+def _click_matching_service_option(
+    driver,
+    expected_label: str,
+    *,
+    allow_contains: bool = False,
+    recorder: Optional[DiagnosticsRecorder] = None,
+) -> bool:
     """Click a matching option in div[role='listbox'] list."""
     try:
         options = driver.find_elements(By.XPATH, SERVICE_TYPE_OPTION_XPATH)
@@ -787,15 +924,27 @@ def _click_matching_service_option(driver, expected_label: str, allow_contains: 
     for option in options:
         text = _normalize_text(getattr(option, "text", ""))
         if text.lower() == target:
-            option.click()
-            return True
+            return _safe_click(
+                driver,
+                option,
+                recorder=recorder,
+                step="select_option_click",
+                code="SERVICE_TYPE_OPTION_CLICK",
+                selector=SERVICE_TYPE_OPTION_XPATH,
+            )
 
     if allow_contains and target:
         for option in options:
             text = _normalize_text(getattr(option, "text", ""))
             if target in text.lower():
-                option.click()
-                return True
+                return _safe_click(
+                    driver,
+                    option,
+                    recorder=recorder,
+                    step="select_option_click",
+                    code="SERVICE_TYPE_OPTION_CLICK",
+                    selector=SERVICE_TYPE_OPTION_XPATH,
+                )
 
     return False
 
@@ -819,25 +968,8 @@ def _select_service_type_option(
     if not expected:
         return False
 
-    # Preferred path: type-to-filter and click visible option text.
-    _clear_and_type(driver, input_el, query_text)
-    if _wait_for_listbox_open(driver, timeout=4.0):
-        clicked = _click_matching_service_option(driver, expected, allow_contains=False)
-        if not clicked and allow_contains:
-            clicked = _click_matching_service_option(driver, expected, allow_contains=True)
-        if clicked and _wait_for_combobox_closed(input_el, timeout=4.0):
-            selected = _read_selected_service_type_label(driver)
-            if _labels_match(expected, selected):
-                return True
-            recorder.event(
-                "WARN",
-                "select_option",
-                "SERVICE_TYPE_SELECTED_LABEL_MISMATCH",
-                f"Expected '{expected}' but selected '{selected}' after option click.",
-            )
-
-    # Fallback path: Enter first filtered option, then verify value.
-    _clear_and_type(driver, input_el, query_text)
+    # Preferred path: keyboard-first selection (reduces click interception).
+    _clear_and_type(driver, input_el, query_text, recorder=recorder)
     _wait_for_listbox_open(driver, timeout=3.0)
     try:
         input_el.send_keys(Keys.ENTER)
@@ -851,8 +983,35 @@ def _select_service_type_option(
             "WARN",
             "select_option",
             "SERVICE_TYPE_SELECTED_LABEL_MISMATCH",
-            f"Expected '{expected}' but selected '{selected}' after Enter fallback.",
+            f"Expected '{expected}' but selected '{selected}' after Enter selection.",
         )
+
+    # Fallback: click matching visible option text.
+    _clear_and_type(driver, input_el, query_text, recorder=recorder)
+    if _wait_for_listbox_open(driver, timeout=4.0):
+        clicked = _click_matching_service_option(
+            driver,
+            expected,
+            allow_contains=False,
+            recorder=recorder,
+        )
+        if not clicked and allow_contains:
+            clicked = _click_matching_service_option(
+                driver,
+                expected,
+                allow_contains=True,
+                recorder=recorder,
+            )
+        if clicked and _wait_for_combobox_closed(input_el, timeout=4.0):
+            selected = _read_selected_service_type_label(driver)
+            if _labels_match(expected, selected):
+                return True
+            recorder.event(
+                "WARN",
+                "select_option",
+                "SERVICE_TYPE_SELECTED_LABEL_MISMATCH",
+                f"Expected '{expected}' but selected '{selected}' after option click fallback.",
+            )
 
     recorder.event(
         "WARN",
@@ -1099,7 +1258,7 @@ def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[D
     return rows
 
 
-def _click_add_appointment(driver) -> bool:
+def _click_add_appointment(driver, recorder: Optional[DiagnosticsRecorder] = None) -> bool:
     """Click Add Appointment from TP1 client appointments tab."""
     selectors = [
         (By.XPATH, "//a[contains(normalize-space(.), 'Add Appointment')]"),
@@ -1114,14 +1273,15 @@ def _click_add_appointment(driver) -> bool:
         for elem in elems:
             if not _is_interactable(elem):
                 continue
-            try:
-                elem.click()
-            except Exception:
-                try:
-                    driver.execute_script("arguments[0].click();", elem)
-                except Exception:
-                    continue
-            return True
+            if _safe_click(
+                driver,
+                elem,
+                recorder=recorder,
+                step="open_assist",
+                code="ADD_APPOINTMENT_CLICK",
+                selector=selector,
+            ):
+                return True
     return False
 
 
@@ -1148,7 +1308,7 @@ def _switch_to_variants_capable_editor(
     try:
         driver.get(target_url)
         WebDriverWait(driver, 25).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        if not _click_add_appointment(driver):
+        if not _click_add_appointment(driver, recorder=recorder):
             raise RuntimeError("Could not click Add Appointment")
 
         time.sleep(0.6)
@@ -1744,10 +1904,21 @@ def extract_service_type_variants(
             if target_id and target_id in all_service_types:
                 selected[target_id] = all_service_types[target_id]
             elif target_label:
-                for st_id, st_label in sorted(all_service_types.items()):
-                    if target_label in st_label.lower():
-                        selected[st_id] = st_label
-                        break
+                matches = [
+                    (st_id, st_label)
+                    for st_id, st_label in sorted(all_service_types.items(), key=lambda kv: kv[1].lower())
+                    if target_label in st_label.lower()
+                ]
+                if matches:
+                    preferred = matches
+                    # Avoid false-positive "Non Active ..." matches when operator asked for "Active ...".
+                    if "non" not in target_label:
+                        non_filtered = [
+                            pair for pair in matches if "non active" not in pair[1].lower()
+                        ]
+                        if non_filtered:
+                            preferred = non_filtered
+                    selected[preferred[0][0]] = preferred[0][1]
             if not selected:
                 first_id = next(iter(sorted(all_service_types.keys())))
                 selected[first_id] = all_service_types[first_id]

@@ -13,6 +13,9 @@ This runbook covers reliable extraction of Service Type variants from Assist / a
 - Hard gate: variants extraction aborts with `REFERENCE_INDEX_MISSING` if this reference file is missing/empty.
   - Run `capture_service_type_rates()` first to regenerate reference exports.
   - Debug-only override: call extractor with `allow_missing_reference_index=True` to permit combobox fallback (not truth-ready IDs).
+- Reference completeness gate:
+  - reference capture fails with `CHK_REFERENCE_INDEX_TRUNCATED` when row count is suspiciously low (`<650`).
+  - do not run variants extraction until reference capture completes without truncation.
 - Probe client ID is known (required for TP1 Add Appointment nested-iframe route).
 
 ## What "success" means

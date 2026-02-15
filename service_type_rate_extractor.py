@@ -15,10 +15,12 @@ import line_item_paths
 from selenium_helpers import click_js, wait_for
 
 # Canonical source for this module. Add Appointment is intentionally not used.
-SERVICE_TYPES_PAGE_URL = (
+SERVICE_TYPES_PAGE_URL = "https://tp1.com.au/service-types.asp?posted=yes"
+SERVICE_TYPES_PAGE_URL_LEGACY = (
     "https://tp1.com.au/service-types.asp?posted=yes&fld586=False&psize=1000&sbmt=yes"
 )
 SERVICE_TYPE_DETAILS_URL_TMPL = "https://tp1.com.au/service-type-details.asp?eid={eid}"
+MIN_REFERENCE_ROW_COUNT = 650
 
 DATASET_COLUMNS = [
     "Service Type",
@@ -341,6 +343,13 @@ def _navigate_to_service_types_page(driver, progress: ProgressCallback = None):
     _emit("ServiceType→Rate: navigating to service-types page.", progress)
     driver.get(SERVICE_TYPES_PAGE_URL)
     wait_for(driver, By.TAG_NAME, "body", timeout=25)
+    if _find_select(driver, name="psize") is None:
+        _emit(
+            "ServiceType→Rate: page did not expose filters; reopening via legacy query URL.",
+            progress,
+        )
+        driver.get(SERVICE_TYPES_PAGE_URL_LEGACY)
+        wait_for(driver, By.TAG_NAME, "body", timeout=25)
     try:
         title = _normalize_text(driver.title)
         if "service" not in title.lower():
@@ -460,7 +469,7 @@ def _set_records_per_page(driver, progress: ProgressCallback = None) -> int:
     return target_value
 
 
-def _set_deleted_filter_no(driver, progress: ProgressCallback = None):
+def _set_deleted_filter_all(driver, progress: ProgressCallback = None):
     select_elem = _find_select(driver, aria_contains="deleted", name="fld586")
     if select_elem is None:
         _emit(
@@ -474,16 +483,14 @@ def _set_deleted_filter_no(driver, progress: ProgressCallback = None):
     for option in dropdown.options:
         token = _normalize_text(option.text).lower()
         value_token = _normalize_text(option.get_attribute("value") or "").lower()
-        if token in {"no", "false", "n"} or value_token in {"false", "0", "no", "n"}:
+        if token in {"all", "(all)", "any"} or value_token in {"", "all", "any"}:
             chosen = option
             break
-    if chosen is None and dropdown.options:
-        # fallback to first non-empty option when exact text is unavailable
-        for option in dropdown.options:
-            if _normalize_text(option.text):
-                chosen = option
-                break
     if chosen is None:
+        _emit(
+            "ServiceType→Rate warning: could not find a Deleted=All option; keeping current filter.",
+            progress,
+        )
         return
 
     try:
@@ -493,7 +500,21 @@ def _set_deleted_filter_no(driver, progress: ProgressCallback = None):
         if value:
             dropdown.select_by_value(value)
 
-    _emit("ServiceType→Rate: applying default filter Deleted = No.", progress)
+    _emit("ServiceType→Rate: applying filter Deleted = All.", progress)
+
+
+def _verify_reference_completeness(
+    rows: List[Dict[str, str]],
+    *,
+    min_rows: int = MIN_REFERENCE_ROW_COUNT,
+):
+    """Fail fast when capture volume is suspiciously low."""
+    row_count = len(rows)
+    if row_count < int(min_rows):
+        raise RuntimeError(
+            f"CHK_REFERENCE_INDEX_TRUNCATED: captured {row_count} rows (<{min_rows}). "
+            "ServiceTypes_latest.csv appears incomplete; verify filters/pagination and rerun."
+        )
 
 
 def _refresh_search_results(driver, progress: ProgressCallback = None):
@@ -845,7 +866,7 @@ def capture_service_type_rates(
             )
 
         selected_size = _set_records_per_page(driver, on_progress)
-        _set_deleted_filter_no(driver, on_progress)
+        _set_deleted_filter_all(driver, on_progress)
         _refresh_search_results(driver, on_progress)
 
         table = _wait_for_table_rows(driver, timeout=20)
@@ -864,13 +885,14 @@ def capture_service_type_rates(
             )
             _navigate_to_service_types_page(driver, on_progress)
             _set_records_per_page(driver, on_progress)
-            _set_deleted_filter_no(driver, on_progress)
+            _set_deleted_filter_all(driver, on_progress)
             _refresh_search_results(driver, on_progress)
             table = _wait_for_table_rows(driver, timeout=20)
             rows = _extract_rows_from_html_table(table, on_row=on_row)
             method = "html"
 
         _verify_dataset(rows)
+        _verify_reference_completeness(rows)
         _emit(f"ServiceType→Rate: capture complete: {len(rows)} rows.", on_progress)
 
         saved = _save_outputs(rows, output_root, on_progress)
