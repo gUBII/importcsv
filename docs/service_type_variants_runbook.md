@@ -31,7 +31,12 @@ This runbook covers reliable extraction of Service Type variants from Assist / a
   - at least `day_rate-input` + `day_code-input` exist after sentinel selection.
 - Service Type selection is only considered valid when:
   - combobox interaction completes (`aria-expanded=false`), and
-  - combobox `value` matches the intended Service Type label (normalized text equality).
+  - selected label in the React control (input value or single-value display) matches intended label.
+- Queue construction is Assist-first:
+  - collect Service Type labels from Assist dropdown (`div[role='option']`) in UI order.
+  - intersect those labels with reference index IDs.
+  - iterate intersection queue in Assist order (not raw reference order).
+  - unmatched Assist labels are queued as `UNMAPPED` and logged for investigation.
 - Each Service Type outputs:
   - `Parent Service Type ID`
   - `Parent Service Type Label`
@@ -80,8 +85,8 @@ Current selector priorities:
 
 1. Service Type combobox:
    - `//div[@data-cy='service_type_id-reload']/preceding::input[@role='combobox'][1]`
-   - workflow: click -> clear -> type -> listbox wait -> click exact `div[role='option']` -> verify combobox value
-   - fallback: Enter first filtered option, then still verify combobox value equals expected label
+   - workflow: safe-click -> clear -> type -> listbox wait -> `Enter` -> verify selected label
+   - fallback: safe-click exact `div[role='option']` then verify selected label
 2. Variants grid:
    - dynamic pairing via:
      - `input[data-cy$='_rate-input']`
@@ -112,6 +117,15 @@ Per run directory:
   - unhandled run failures
 
 No early-failure path is allowed to skip diagnostics persistence.
+
+Queue diagnostics checkers/events:
+
+- `CHK_SERVICE_TYPE_QUEUE_BUILT`
+  - includes assist/reference/intersection/unmapped/duplicate-label counts.
+- `CHK_SERVICE_TYPE_LABEL_UNMAPPED`
+  - emitted when an Assist label cannot be matched to a reference ID.
+- `CHK_REFERENCE_DUPLICATE_LABEL`
+  - emitted when multiple reference IDs share one normalized label; lowest numeric ID is used.
 
 ## Failure semantics
 

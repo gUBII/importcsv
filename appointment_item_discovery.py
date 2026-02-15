@@ -114,6 +114,9 @@ CHECKER_VARIANT_TABLE_MISSING = "CHK_VARIANT_TABLE_MISSING"
 CHECKER_VARIANT_TABLE_EMPTY = "CHK_VARIANT_TABLE_EMPTY"
 CHECKER_VARIANTS_EDITOR_ROUTE = "CHK_VARIANTS_EDITOR_ROUTE"
 CHECKER_VARIANTS_EDITOR_CAPABILITY = "CHK_VARIANTS_EDITOR_CAPABILITY"
+CHECKER_SERVICE_TYPE_QUEUE_BUILT = "CHK_SERVICE_TYPE_QUEUE_BUILT"
+CHECKER_SERVICE_TYPE_LABEL_UNMAPPED = "CHK_SERVICE_TYPE_LABEL_UNMAPPED"
+CHECKER_REFERENCE_DUPLICATE_LABEL = "CHK_REFERENCE_DUPLICATE_LABEL"
 
 ASSIST_DIRECT_URL = "https://assist.turnpoint.co/appointments/new"
 SERVICE_TYPE_INPUT_XPATH = (
@@ -1647,6 +1650,132 @@ def _load_service_types_from_reference_index(
     return service_types
 
 
+def _service_type_id_sort_key(service_type_id: str) -> Tuple[int, Union[int, str]]:
+    """Deterministic sort key for IDs: numeric first, then lexical fallback."""
+    text = _normalize_text(service_type_id)
+    if text.isdigit():
+        return (0, int(text))
+    return (1, text)
+
+
+def _build_service_type_queue(
+    reference_service_types: Dict[str, str],
+    assist_options: List[Dict[str, str]],
+    recorder: DiagnosticsRecorder,
+) -> List[Tuple[str, str]]:
+    """
+    Build run queue from Assist dropdown order intersected with reference IDs.
+
+    Returns list of (service_type_id, service_type_label) in Assist order.
+    """
+    ref_by_label: Dict[str, List[str]] = {}
+    for st_id, st_label in reference_service_types.items():
+        norm_label = _normalized_label_for_compare(st_label)
+        if not norm_label:
+            continue
+        ref_by_label.setdefault(norm_label, []).append(_normalize_text(st_id))
+
+    duplicate_label_count = 0
+    for norm_label, ids in ref_by_label.items():
+        unique_ids = sorted({sid for sid in ids if sid}, key=_service_type_id_sort_key)
+        ref_by_label[norm_label] = unique_ids
+        if len(unique_ids) > 1:
+            duplicate_label_count += 1
+
+    queue: List[Tuple[str, str]] = []
+    seen_assist_labels: set[str] = set()
+    emitted_duplicate_labels: set[str] = set()
+    assist_count = 0
+    intersection_count = 0
+    unmapped_count = 0
+
+    for opt in assist_options:
+        label = _normalize_text(opt.get("label") or opt.get("value") or "")
+        if not label:
+            continue
+        assist_count += 1
+        norm_label = _normalized_label_for_compare(label)
+        if not norm_label or norm_label in seen_assist_labels:
+            continue
+        seen_assist_labels.add(norm_label)
+
+        ids = ref_by_label.get(norm_label, [])
+        if ids:
+            chosen_id = ids[0]
+            if len(ids) > 1 and norm_label not in emitted_duplicate_labels:
+                emitted_duplicate_labels.add(norm_label)
+                msg = f"Duplicate reference labels mapped to IDs {ids}; using {chosen_id} for '{label}'."
+                recorder.event(
+                    "WARN",
+                    "service_type_queue",
+                    CHECKER_REFERENCE_DUPLICATE_LABEL,
+                    msg,
+                    context={"label": label, "ids": ids, "chosen_id": chosen_id},
+                )
+                recorder.checker(
+                    "service_type_queue",
+                    "WARN",
+                    CHECKER_REFERENCE_DUPLICATE_LABEL,
+                    msg,
+                )
+            queue.append((chosen_id, label))
+            intersection_count += 1
+        else:
+            msg = f"Assist Service Type label '{label}' not found in reference index; using UNMAPPED id."
+            recorder.event(
+                "WARN",
+                "service_type_queue",
+                CHECKER_SERVICE_TYPE_LABEL_UNMAPPED,
+                msg,
+                context={"label": label},
+            )
+            recorder.checker(
+                "service_type_queue",
+                "WARN",
+                CHECKER_SERVICE_TYPE_LABEL_UNMAPPED,
+                msg,
+            )
+            queue.append(("UNMAPPED", label))
+            unmapped_count += 1
+
+    queue_msg = (
+        "Built Service Type queue from Assist dropdown intersection: "
+        f"assist_count={assist_count}, reference_count={len(reference_service_types)}, "
+        f"intersection_count={intersection_count}, unmapped_count={unmapped_count}, "
+        f"duplicate_label_count={duplicate_label_count}"
+    )
+    recorder.event(
+        "INFO",
+        "service_type_queue",
+        CHECKER_SERVICE_TYPE_QUEUE_BUILT,
+        queue_msg,
+        option_count=len(queue),
+        context={
+            "assist_count": assist_count,
+            "reference_count": len(reference_service_types),
+            "intersection_count": intersection_count,
+            "unmapped_count": unmapped_count,
+            "duplicate_label_count": duplicate_label_count,
+        },
+    )
+    recorder.checker(
+        "service_type_queue",
+        "PASS",
+        CHECKER_SERVICE_TYPE_QUEUE_BUILT,
+        queue_msg,
+        option_count=len(queue),
+    )
+    return queue
+
+
+def _service_type_checkpoint_key(service_type_id: str, service_type_label: str) -> str:
+    """Stable key for checkpoint processed/failed sets."""
+    st_id = _normalize_text(service_type_id)
+    if st_id and st_id.upper() != "UNMAPPED":
+        return st_id
+    return f"UNMAPPED::{_normalize_token(service_type_label)}"
+
+
 def _build_variant_record(
     *,
     service_type_id: str,
@@ -1839,15 +1968,15 @@ def extract_service_type_variants(
     all_variants: List[Dict[str, str]] = _load_checkpoint_rows(run_id) if resume and not force_refresh else []
     if all_variants:
         _emit(f"Loaded {len(all_variants)} checkpoint rows", on_progress)
-    all_service_types: Dict[str, str] = {}
-    synthetic_smoke_targets: set[str] = set()
+    reference_service_types: Dict[str, str] = {}
+    service_type_queue: List[Tuple[str, str]] = []
 
     driver = None
     fatal_error = ""
     try:
         # Hard gate: reference index is required for stable Service Type IDs.
-        all_service_types = _load_service_types_from_reference_index(recorder)
-        if not all_service_types and not allow_missing_reference_index:
+        reference_service_types = _load_service_types_from_reference_index(recorder)
+        if not reference_service_types and not allow_missing_reference_index:
             missing_msg = (
                 "REFERENCE_INDEX_MISSING — run capture_service_type_rates first "
                 "to generate ~/LineItemRates/ServiceTypeTruth/reference/latest/ServiceTypes_latest.csv"
@@ -1872,41 +2001,31 @@ def extract_service_type_variants(
         if not _open_assist_appointments_new(driver, recorder, preferred_probe):
             raise RuntimeError("Failed to open Assist appointment editor with interactable Service Type combobox.")
 
-        # Collect Service Types from exported index first, optional fallback to UI options.
-        if not all_service_types:
-            options = _collect_assist_options(driver, recorder)
-            for opt in options:
-                value = _normalize_text(opt.get("value") or "")
-                label = _normalize_text(opt.get("label") or "")
-                if value and label and value not in all_service_types:
-                    all_service_types[value] = label
+        assist_options = _collect_assist_options(driver, recorder)
+        if not assist_options:
+            raise RuntimeError("No Service Types found in Assist dropdown listbox.")
 
-        if not all_service_types and smoke_mode and _normalize_text(smoke_service_type_label):
-            synthetic_id = _normalize_text(smoke_service_type_id) or _normalize_text(smoke_service_type_label)
-            synthetic_label = _normalize_text(smoke_service_type_label)
-            all_service_types = {synthetic_id: synthetic_label}
-            synthetic_smoke_targets.add(synthetic_id)
-            recorder.event(
-                "WARN",
-                "smoke_mode",
-                "SMOKE_MODE_SYNTHETIC_SERVICE_TYPE",
-                "Reference/options unavailable; using smoke_service_type_label as synthetic target.",
-                context={"id": synthetic_id, "label": synthetic_label},
-            )
-
-        if not all_service_types:
-            raise RuntimeError("No Service Types available from reference index or Assist combobox options.")
+        service_type_queue = _build_service_type_queue(
+            reference_service_types,
+            assist_options,
+            recorder,
+        )
+        if not service_type_queue:
+            raise RuntimeError("No Service Types available after Assist/reference intersection.")
 
         if smoke_mode:
-            selected: Dict[str, str] = {}
+            selected: List[Tuple[str, str]] = []
             target_id = _normalize_text(smoke_service_type_id)
             target_label = _normalize_text(smoke_service_type_label).lower()
-            if target_id and target_id in all_service_types:
-                selected[target_id] = all_service_types[target_id]
+            if target_id:
+                for st_id, st_label in service_type_queue:
+                    if _normalize_text(st_id) == target_id:
+                        selected.append((st_id, st_label))
+                        break
             elif target_label:
                 matches = [
                     (st_id, st_label)
-                    for st_id, st_label in sorted(all_service_types.items(), key=lambda kv: kv[1].lower())
+                    for st_id, st_label in service_type_queue
                     if target_label in st_label.lower()
                 ]
                 if matches:
@@ -1914,32 +2033,39 @@ def extract_service_type_variants(
                     # Avoid false-positive "Non Active ..." matches when operator asked for "Active ...".
                     if "non" not in target_label:
                         non_filtered = [
-                            pair for pair in matches if "non active" not in pair[1].lower()
+                            pair
+                            for pair in matches
+                            if "non active" not in pair[1].lower()
                         ]
                         if non_filtered:
                             preferred = non_filtered
-                    selected[preferred[0][0]] = preferred[0][1]
+                    selected.append(preferred[0])
             if not selected:
-                first_id = next(iter(sorted(all_service_types.keys())))
-                selected[first_id] = all_service_types[first_id]
-            all_service_types = selected
+                selected = [service_type_queue[0]]
+            service_type_queue = selected
             recorder.event(
                 "INFO",
                 "smoke_mode",
                 "SMOKE_MODE_ACTIVE",
-                f"Smoke mode active for {len(all_service_types)} Service Type(s)",
-                context=all_service_types,
+                f"Smoke mode active for {len(service_type_queue)} Service Type(s)",
+                context={
+                    "queue": [
+                        {"service_type_id": st_id, "service_type_label": st_label}
+                        for st_id, st_label in service_type_queue
+                    ]
+                },
             )
 
-        _emit(f"Total Service Types queued: {len(all_service_types)}", on_progress)
+        _emit(f"Total Service Types queued: {len(service_type_queue)}", on_progress)
 
         # Extract variants for each Service Type
         current_probe_context = preferred_probe
-        for st_value, st_label in sorted(all_service_types.items(), key=lambda kv: kv[1].lower()):
+        for st_value, st_label in service_type_queue:
+            service_key = _service_type_checkpoint_key(st_value, st_label)
             if force_refresh:
                 processed_flag = False
             else:
-                processed_flag = st_value in processed_ids
+                processed_flag = service_key in processed_ids
 
             if processed_flag:
                 _emit(f"Skipping {st_label} (already processed)", on_progress)
@@ -1971,112 +2097,101 @@ def extract_service_type_variants(
                             continue
                         current_probe_context = probe_id
 
-                    skip_selection_for_synthetic_smoke = smoke_mode and st_value in synthetic_smoke_targets
-                    if skip_selection_for_synthetic_smoke:
+                    before_fp = _read_variant_fingerprint(driver)
+                    success = _select_assist_option_with_retries(
+                        driver,
+                        st_value,
+                        st_label,
+                        recorder,
+                    )
+                    if not success:
+                        reason = "Service Type selection failed after fallback strategies."
+                        screenshot, html = _capture_assist_failure_artifacts(
+                            driver,
+                            recorder,
+                            prefix=f"service_type_select_fail_{st_value}_{probe_id}",
+                            reason=reason,
+                        )
+                        recorder.checker(
+                            "service_type_select",
+                            "FAIL",
+                            CHECKER_SERVICE_TYPE_SELECT,
+                            reason,
+                            client_id=probe_id,
+                            url=_normalize_text(getattr(driver, "current_url", "")),
+                            selector=SERVICE_TYPE_INPUT_XPATH,
+                            screenshot=screenshot,
+                            html=html,
+                        )
+                        failure_row = _build_failure_record(
+                            service_type_id=st_value,
+                            service_type_label=st_label,
+                            probe_client_id=probe_id,
+                            source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
+                            reason=reason,
+                        )
+                        all_variants.append(failure_row)
+                        _append_to_checkpoint_csv(run_id, [failure_row])
+                        if on_row:
+                            on_row(failure_row)
+                        checkpoint["total_variant_rows"] = len(all_variants)
+                        _update_checkpoint(run_id, checkpoint)
+                        continue
+
+                    selected_label = _read_selected_service_type_label(driver)
+                    if not _labels_match(st_label, selected_label):
+                        reason = (
+                            "Service Type selection mismatch: "
+                            f"expected '{st_label}', got '{selected_label or '<empty>'}'."
+                        )
+                        screenshot, html = _capture_assist_failure_artifacts(
+                            driver,
+                            recorder,
+                            prefix=f"service_type_label_mismatch_{st_value}_{probe_id}",
+                            reason=reason,
+                        )
+                        recorder.checker(
+                            "service_type_select",
+                            "FAIL",
+                            CHECKER_SERVICE_TYPE_SELECT,
+                            reason,
+                            client_id=probe_id,
+                            url=_normalize_text(getattr(driver, "current_url", "")),
+                            selector=SERVICE_TYPE_INPUT_XPATH,
+                            screenshot=screenshot,
+                            html=html,
+                        )
+                        failure_row = _build_failure_record(
+                            service_type_id=st_value,
+                            service_type_label=st_label,
+                            probe_client_id=probe_id,
+                            source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
+                            reason=reason,
+                        )
+                        all_variants.append(failure_row)
+                        _append_to_checkpoint_csv(run_id, [failure_row])
+                        if on_row:
+                            on_row(failure_row)
+                        checkpoint["total_variant_rows"] = len(all_variants)
+                        _update_checkpoint(run_id, checkpoint)
+                        continue
+
+                    if not _wait_for_fingerprint_change(
+                        driver,
+                        before_fp,
+                        expected_label=st_label,
+                        timeout=6.0,
+                    ):
                         recorder.event(
                             "WARN",
-                            "select_option",
-                            "SMOKE_SYNTHETIC_SKIP_SELECT",
-                            "Skipping explicit selection for synthetic smoke target; using current editor selection.",
+                            "extract_variants",
+                            "FINGERPRINT_UNCHANGED",
+                            "Variant fingerprint unchanged after selection; continuing because combobox value is verified.",
                             client_id=probe_id,
-                            context={"service_type_id": st_value, "service_type_label": st_label},
+                            url=_normalize_text(getattr(driver, "current_url", "")),
+                            context={"service_type_label": st_label},
                         )
-                    else:
-                        before_fp = _read_variant_fingerprint(driver)
-                        success = _select_assist_option_with_retries(
-                            driver,
-                            st_value,
-                            st_label,
-                            recorder,
-                        )
-                        if not success:
-                            reason = "Service Type selection failed after fallback strategies."
-                            screenshot, html = _capture_assist_failure_artifacts(
-                                driver,
-                                recorder,
-                                prefix=f"service_type_select_fail_{st_value}_{probe_id}",
-                                reason=reason,
-                            )
-                            recorder.checker(
-                                "service_type_select",
-                                "FAIL",
-                                CHECKER_SERVICE_TYPE_SELECT,
-                                reason,
-                                client_id=probe_id,
-                                url=_normalize_text(getattr(driver, "current_url", "")),
-                                selector=SERVICE_TYPE_INPUT_XPATH,
-                                screenshot=screenshot,
-                                html=html,
-                            )
-                            failure_row = _build_failure_record(
-                                service_type_id=st_value,
-                                service_type_label=st_label,
-                                probe_client_id=probe_id,
-                                source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
-                                reason=reason,
-                            )
-                            all_variants.append(failure_row)
-                            _append_to_checkpoint_csv(run_id, [failure_row])
-                            if on_row:
-                                on_row(failure_row)
-                            checkpoint["total_variant_rows"] = len(all_variants)
-                            _update_checkpoint(run_id, checkpoint)
-                            continue
-
-                        selected_label = _read_selected_service_type_label(driver)
-                        if not _labels_match(st_label, selected_label):
-                            reason = (
-                                "Service Type selection mismatch: "
-                                f"expected '{st_label}', got '{selected_label or '<empty>'}'."
-                            )
-                            screenshot, html = _capture_assist_failure_artifacts(
-                                driver,
-                                recorder,
-                                prefix=f"service_type_label_mismatch_{st_value}_{probe_id}",
-                                reason=reason,
-                            )
-                            recorder.checker(
-                                "service_type_select",
-                                "FAIL",
-                                CHECKER_SERVICE_TYPE_SELECT,
-                                reason,
-                                client_id=probe_id,
-                                url=_normalize_text(getattr(driver, "current_url", "")),
-                                selector=SERVICE_TYPE_INPUT_XPATH,
-                                screenshot=screenshot,
-                                html=html,
-                            )
-                            failure_row = _build_failure_record(
-                                service_type_id=st_value,
-                                service_type_label=st_label,
-                                probe_client_id=probe_id,
-                                source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
-                                reason=reason,
-                            )
-                            all_variants.append(failure_row)
-                            _append_to_checkpoint_csv(run_id, [failure_row])
-                            if on_row:
-                                on_row(failure_row)
-                            checkpoint["total_variant_rows"] = len(all_variants)
-                            _update_checkpoint(run_id, checkpoint)
-                            continue
-
-                        if not _wait_for_fingerprint_change(
-                            driver,
-                            before_fp,
-                            expected_label=st_label,
-                            timeout=6.0,
-                        ):
-                            recorder.event(
-                                "WARN",
-                                "extract_variants",
-                                "FINGERPRINT_UNCHANGED",
-                                "Variant fingerprint unchanged after selection; continuing because combobox value is verified.",
-                                client_id=probe_id,
-                                url=_normalize_text(getattr(driver, "current_url", "")),
-                                context={"service_type_label": st_label},
-                            )
-                        time.sleep(0.3)
+                    time.sleep(0.3)
 
                     if not _wait_for_variant_values_ready(driver, timeout=2.5):
                         recorder.event(
@@ -2218,13 +2333,13 @@ def extract_service_type_variants(
 
             # Mark this Service Type as attempted regardless of PASS/FAIL so
             # resume does not duplicate rows by re-attempting prior failures.
-            processed_ids.add(st_value)
+            processed_ids.add(service_key)
             checkpoint["processed_service_type_ids"] = list(processed_ids)
             if service_pass:
-                if st_value in failed_ids:
-                    failed_ids.remove(st_value)
+                if service_key in failed_ids:
+                    failed_ids.remove(service_key)
             else:
-                failed_ids.add(st_value)
+                failed_ids.add(service_key)
             checkpoint["failed_service_type_ids"] = list(failed_ids)
             checkpoint["total_variant_rows"] = len(all_variants)
             _update_checkpoint(run_id, checkpoint)
@@ -2261,7 +2376,7 @@ def extract_service_type_variants(
 
         summary = {
             "run_id": run_id,
-            "total_service_types": len(all_service_types),
+            "total_service_types": len(service_type_queue),
             "processed_service_types": len(processed_ids),
             "failed_service_types": len(failed_ids),
             "total_variant_rows": len(all_variants),

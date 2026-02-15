@@ -577,6 +577,32 @@ def _sample_variant_rows():
     ]
 
 
+def test_build_service_type_queue_uses_assist_order_and_handles_unmapped_duplicates(tmp_path):
+    """Queue should follow Assist order, include UNMAPPED labels, and pick lowest duplicate ID."""
+    recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
+    reference = {
+        "200": "Beta",
+        "100": "Alpha",
+        "050": "Alpha",  # duplicate label, lower numeric id
+    }
+    assist = [
+        {"label": "Beta", "value": "Beta"},
+        {"label": "Gamma", "value": "Gamma"},
+        {"label": "Alpha", "value": "Alpha"},
+    ]
+
+    queue = discovery._build_service_type_queue(reference, assist, recorder)
+
+    assert queue == [
+        ("200", "Beta"),
+        ("UNMAPPED", "Gamma"),
+        ("050", "Alpha"),
+    ]
+    assert any(c["code"] == discovery.CHECKER_SERVICE_TYPE_QUEUE_BUILT for c in recorder.checkers)
+    assert any(c["code"] == discovery.CHECKER_SERVICE_TYPE_LABEL_UNMAPPED for c in recorder.checkers)
+    assert any(c["code"] == discovery.CHECKER_REFERENCE_DUPLICATE_LABEL for c in recorder.checkers)
+
+
 def test_resume_skips_previously_failed_service_types_unless_force_refresh(tmp_path, monkeypatch):
     """Resume should skip attempted+failed service types; force_refresh should re-attempt."""
     fake_driver = _FakeDriver(tmp_path)
@@ -612,7 +638,11 @@ def test_resume_skips_previously_failed_service_types_unless_force_refresh(tmp_p
     monkeypatch.setattr(discovery, "_find_latest_resumable_checkpoint", lambda *_args, **_kwargs: dict(checkpoint))
     monkeypatch.setattr(discovery, "_load_checkpoint_rows", lambda _run_id: [dict(existing_failure_row)])
     monkeypatch.setattr(discovery, "_load_service_types_from_reference_index", lambda _rec: {"7358": "(SIL) Active Night-Time"})
-    monkeypatch.setattr(discovery, "_collect_assist_options", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        discovery,
+        "_collect_assist_options",
+        lambda *_args, **_kwargs: [{"label": "(SIL) Active Night-Time", "value": "(SIL) Active Night-Time"}],
+    )
     monkeypatch.setattr(discovery, "_select_assist_option_with_retries", lambda *_args, **_kwargs: select_calls.append("called") or True)
     monkeypatch.setattr(discovery, "_read_selected_service_type_label", lambda *_args, **_kwargs: "(SIL) Active Night-Time")
     monkeypatch.setattr(discovery, "_wait_for_fingerprint_change", lambda *_args, **_kwargs: True)
@@ -684,7 +714,11 @@ def test_resume_does_not_duplicate_checkpoint_rows_for_previously_attempted_type
     monkeypatch.setattr(discovery, "_find_latest_resumable_checkpoint", lambda *_args, **_kwargs: dict(checkpoint))
     monkeypatch.setattr(discovery, "_load_checkpoint_rows", lambda _run_id: [dict(existing_failure_row)])
     monkeypatch.setattr(discovery, "_load_service_types_from_reference_index", lambda _rec: {"9001": "Existing Failed Type"})
-    monkeypatch.setattr(discovery, "_collect_assist_options", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        discovery,
+        "_collect_assist_options",
+        lambda *_args, **_kwargs: [{"label": "Existing Failed Type", "value": "Existing Failed Type"}],
+    )
     monkeypatch.setattr(discovery, "_append_to_checkpoint_csv", lambda _run_id, rows: append_rows.extend(rows))
     monkeypatch.setattr(discovery, "_write_csv", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(discovery, "_write_xlsx", lambda _rows, _fields, path: path)
