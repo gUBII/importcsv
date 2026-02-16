@@ -11,6 +11,7 @@ Output: ~/LineItemRates/ServiceTypeTruth/variants/{latest,snapshots}/
 """
 
 import csv
+import hashlib
 import json
 import re
 import shutil
@@ -173,6 +174,14 @@ def _normalize_token(value: str) -> str:
     """Normalize token: strip, lowercase, alphanumeric + underscore."""
     text = _normalize_text(value).lower()
     return re.sub(r"[^a-z0-9_]", "", text)
+
+
+def _unmapped_service_type_id(label: str) -> str:
+    """Create stable synthetic ID for Assist labels missing from reference index."""
+    normalized = _normalize_text(label)
+    token = _normalize_token(normalized) or "label"
+    digest = hashlib.sha1(normalized.casefold().encode("utf-8")).hexdigest()[:10]
+    return f"UNMAPPED::{token[:32]}::{digest}"
 
 
 def _safe_json(value) -> str:
@@ -1180,6 +1189,32 @@ def _derive_unit_text(driver, rate_el) -> str:
         return ""
 
 
+def _input_marked_non_applicable(input_el) -> bool:
+    """Best-effort signal that a row is structurally non-applicable."""
+    if input_el is None:
+        return False
+    try:
+        if hasattr(input_el, "is_enabled") and not input_el.is_enabled():
+            return True
+    except Exception:
+        pass
+    for attr in ("disabled", "readonly"):
+        try:
+            raw = input_el.get_attribute(attr)
+        except Exception:
+            raw = None
+        if raw is None:
+            continue
+        text = _normalize_text(raw).lower()
+        if text in ("true", "1", "yes", "disabled", "readonly", attr):
+            return True
+    try:
+        aria_disabled = _normalize_text(input_el.get_attribute("aria-disabled")).lower()
+    except Exception:
+        aria_disabled = ""
+    return aria_disabled == "true"
+
+
 def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[Dict]:
     """
     Extract variant rows dynamically from available data-cy rate/code pairs.
@@ -1206,12 +1241,12 @@ def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[D
             context={"prefixes": extra_prefixes},
         )
 
+    raw_rows: List[Dict[str, Any]] = []
     for prefix, rate_el, code_el in pairs:
         rate_raw = _normalize_text(rate_el.get_attribute("value")) if rate_el else ""
         code_raw = _normalize_text(code_el.get_attribute("value")) if code_el else ""
         label = _derive_variant_label(driver, rate_el, prefix)
         unit = _derive_unit_text(driver, rate_el)
-
         missing_fields: List[str] = []
         if not rate_el:
             missing_fields.append("rate_input")
@@ -1222,14 +1257,60 @@ def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[D
         if code_el and not code_raw:
             missing_fields.append("code")
 
+        raw_rows.append(
+            {
+                "prefix": prefix,
+                "label": label,
+                "unit": unit,
+                "rate_el": rate_el,
+                "code_el": code_el,
+                "rate_raw": rate_raw,
+                "code_raw": code_raw,
+                "missing_fields": missing_fields,
+                "non_applicable": _input_marked_non_applicable(rate_el)
+                or _input_marked_non_applicable(code_el),
+            }
+        )
+
+    has_any_complete_row = any(
+        bool(row["rate_el"] and row["code_el"] and row["rate_raw"] and row["code_raw"])
+        for row in raw_rows
+    )
+    for row in raw_rows:
+        prefix = row["prefix"]
+        label = row["label"]
+        rate_raw = row["rate_raw"]
+        code_raw = row["code_raw"]
+        missing_fields = list(row["missing_fields"])
+        non_applicable = bool(row["non_applicable"])
+
         row_status = "PASS"
         row_error = ""
         if missing_fields:
-            row_status = "FAIL"
-            row_error = (
-                f"Missing {', '.join(missing_fields)} for prefix={prefix}"
-                f" ({label or prefix})."
-            )
+            row_missing_rate_code = ("rate" in missing_fields) and ("code" in missing_fields)
+            if row_missing_rate_code and not rate_raw and not code_raw:
+                if non_applicable:
+                    row_status = "NA"
+                    row_error = (
+                        f"NA for prefix={prefix} ({label or prefix}): row inputs are disabled/readonly."
+                    )
+                elif has_any_complete_row:
+                    row_status = "NA"
+                    row_error = (
+                        f"NA for prefix={prefix} ({label or prefix}): blank while other variants are populated."
+                    )
+                else:
+                    row_status = "FAIL"
+                    row_error = (
+                        f"Missing {', '.join(missing_fields)} for prefix={prefix}"
+                        f" ({label or prefix})."
+                    )
+            else:
+                row_status = "FAIL"
+                row_error = (
+                    f"Missing {', '.join(missing_fields)} for prefix={prefix}"
+                    f" ({label or prefix})."
+                )
 
         rows.append(
             {
@@ -1238,7 +1319,7 @@ def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[D
                 "Rate (Raw)": rate_raw,
                 "Code": _normalize_code_text(code_raw),
                 "Code (Raw)": code_raw,
-                "Unit": unit,
+                "Unit": row["unit"],
                 "Status": row_status,
                 "Error Reason": row_error,
                 "_prefix": prefix,
@@ -1246,14 +1327,24 @@ def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[D
         )
 
     fail_count = sum(1 for row in rows if _normalize_text(row.get("Status", "PASS")).upper() == "FAIL")
+    na_count = sum(1 for row in rows if _normalize_text(row.get("Status", "")).upper() == "NA")
+    checker_status = "PASS"
+    if fail_count > 0:
+        checker_status = "FAIL"
+    elif na_count > 0:
+        checker_status = "WARN"
     recorder.checker(
         "extract_variants",
-        "PASS" if fail_count == 0 else "FAIL",
+        checker_status,
         CHECKER_VARIANT_TABLE_EXTRACT,
         (
             f"Extracted {len(rows)} variant rows via dynamic input pairing"
-            if fail_count == 0
-            else f"Extracted {len(rows)} variant rows; {fail_count} row(s) incomplete"
+            if fail_count == 0 and na_count == 0
+            else (
+                f"Extracted {len(rows)} variant rows; {na_count} row(s) marked NA"
+                if fail_count == 0
+                else f"Extracted {len(rows)} variant rows; {fail_count} row(s) incomplete"
+            )
         ),
         option_count=len(rows),
         url=_normalize_text(getattr(driver, "current_url", "")),
@@ -1478,16 +1569,61 @@ def _collect_assist_options(driver, recorder: DiagnosticsRecorder) -> List[Dict[
             pass
         _wait_for_listbox_open(driver, timeout=3.0)
 
-    seen = set()
-    try:
-        option_elems = driver.find_elements(By.XPATH, SERVICE_TYPE_OPTION_XPATH)
-    except Exception:
-        option_elems = []
-    for elem in option_elems:
-        label = _normalize_text(getattr(elem, "text", ""))
-        if label and label not in seen:
-            seen.add(label)
-            options.append({"label": label, "value": label})
+    seen_labels: set[str] = set()
+
+    def _collect_visible_options():
+        try:
+            option_elems = driver.find_elements(By.XPATH, SERVICE_TYPE_OPTION_XPATH)
+        except Exception:
+            option_elems = []
+        for elem in option_elems:
+            label = _normalize_text(getattr(elem, "text", ""))
+            if label and label not in seen_labels:
+                seen_labels.add(label)
+                options.append({"label": label, "value": label})
+
+    _collect_visible_options()
+
+    # React-select listboxes can virtualize options; scroll until no new labels appear.
+    stagnant_passes = 0
+    max_scroll_passes = 120
+    for _ in range(max_scroll_passes):
+        try:
+            listboxes = driver.find_elements(By.CSS_SELECTOR, SERVICE_TYPE_LISTBOX_CSS)
+        except Exception:
+            listboxes = []
+        if not listboxes:
+            break
+
+        listbox = listboxes[0]
+        before_count = len(options)
+        moved = False
+        try:
+            moved = bool(
+                driver.execute_script(
+                    """
+                    const lb = arguments[0];
+                    if (!lb) return false;
+                    const previous = Number(lb.scrollTop || 0);
+                    const step = Math.max(80, Number(lb.clientHeight || 0) - 24);
+                    lb.scrollTop = Math.min(previous + step, Number(lb.scrollHeight || 0));
+                    lb.dispatchEvent(new Event('scroll', { bubbles: true }));
+                    return Number(lb.scrollTop || 0) > previous;
+                    """,
+                    listbox,
+                )
+            )
+        except Exception:
+            moved = False
+
+        time.sleep(0.12)
+        _collect_visible_options()
+        if len(options) == before_count and not moved:
+            stagnant_passes += 1
+        else:
+            stagnant_passes = 0
+        if stagnant_passes >= 5:
+            break
 
     try:
         input_el.send_keys(Keys.ESCAPE)
@@ -1721,13 +1857,17 @@ def _build_service_type_queue(
             queue.append((chosen_id, label))
             intersection_count += 1
         else:
-            msg = f"Assist Service Type label '{label}' not found in reference index; using UNMAPPED id."
+            unmapped_id = _unmapped_service_type_id(label)
+            msg = (
+                f"Assist Service Type label '{label}' not found in reference index; "
+                f"using synthetic id '{unmapped_id}'."
+            )
             recorder.event(
                 "WARN",
                 "service_type_queue",
                 CHECKER_SERVICE_TYPE_LABEL_UNMAPPED,
                 msg,
-                context={"label": label},
+                context={"label": label, "synthetic_id": unmapped_id},
             )
             recorder.checker(
                 "service_type_queue",
@@ -1735,7 +1875,7 @@ def _build_service_type_queue(
                 CHECKER_SERVICE_TYPE_LABEL_UNMAPPED,
                 msg,
             )
-            queue.append(("UNMAPPED", label))
+            queue.append((unmapped_id, label))
             unmapped_count += 1
 
     queue_msg = (
@@ -1771,9 +1911,9 @@ def _build_service_type_queue(
 def _service_type_checkpoint_key(service_type_id: str, service_type_label: str) -> str:
     """Stable key for checkpoint processed/failed sets."""
     st_id = _normalize_text(service_type_id)
-    if st_id and st_id.upper() != "UNMAPPED":
+    if st_id:
         return st_id
-    return f"UNMAPPED::{_normalize_token(service_type_label)}"
+    return _unmapped_service_type_id(service_type_label)
 
 
 def _build_variant_record(
@@ -1816,7 +1956,9 @@ def _build_failure_record(
     probe_client_id: str,
     source_url: str,
     reason: str,
+    status: str = "FAIL",
 ) -> Dict[str, str]:
+    status_value = _normalize_text(status).upper() or "FAIL"
     return {
         "Parent Service Type ID": service_type_id,
         "Parent Service Type Label": service_type_label,
@@ -1829,7 +1971,7 @@ def _build_failure_record(
         "Code (Raw)": "",
         "Item Number": "",
         "Unit": "",
-        "Status": "FAIL",
+        "Status": status_value,
         "Error Reason": _normalize_text(reason),
         "Conflict": "N/A",
         "Conflict Detail": "",
@@ -1855,7 +1997,8 @@ def _detect_conflicts(variants: List[Dict[str, str]]) -> Tuple[List[Dict], List[
     conflict_rows: List[Dict[str, str]] = []
 
     for v in variants:
-        if _normalize_text(v.get("Status", "PASS")).upper() == "FAIL":
+        status = _normalize_text(v.get("Status", "PASS")).upper()
+        if status != "PASS":
             v["Conflict"] = "N/A"
             v["Conflict Detail"] = ""
             clean_rows.append(v)
@@ -2060,6 +2203,7 @@ def extract_service_type_variants(
 
         # Extract variants for each Service Type
         current_probe_context = preferred_probe
+        no_grid_service_keys: set[str] = set()
         for st_value, st_label in service_type_queue:
             service_key = _service_type_checkpoint_key(st_value, st_label)
             if force_refresh:
@@ -2071,7 +2215,8 @@ def extract_service_type_variants(
                 _emit(f"Skipping {st_label} (already processed)", on_progress)
                 continue
 
-            service_pass = False
+            service_has_valid_outcome = False
+            service_has_hard_failure = False
             probes_for_type = probe_client_ids if len(probe_client_ids) > 1 else [preferred_probe]
             for probe_id in probes_for_type:
                 source_url = _normalize_text(getattr(driver, "current_url", ""))
@@ -2092,6 +2237,8 @@ def extract_service_type_variants(
                             _append_to_checkpoint_csv(run_id, [failure_row])
                             if on_row:
                                 on_row(failure_row)
+                            service_has_valid_outcome = True
+                            service_has_hard_failure = True
                             checkpoint["total_variant_rows"] = len(all_variants)
                             _update_checkpoint(run_id, checkpoint)
                             continue
@@ -2134,6 +2281,8 @@ def extract_service_type_variants(
                         _append_to_checkpoint_csv(run_id, [failure_row])
                         if on_row:
                             on_row(failure_row)
+                        service_has_valid_outcome = True
+                        service_has_hard_failure = True
                         checkpoint["total_variant_rows"] = len(all_variants)
                         _update_checkpoint(run_id, checkpoint)
                         continue
@@ -2172,6 +2321,8 @@ def extract_service_type_variants(
                         _append_to_checkpoint_csv(run_id, [failure_row])
                         if on_row:
                             on_row(failure_row)
+                        service_has_valid_outcome = True
+                        service_has_hard_failure = True
                         checkpoint["total_variant_rows"] = len(all_variants)
                         _update_checkpoint(run_id, checkpoint)
                         continue
@@ -2206,33 +2357,28 @@ def extract_service_type_variants(
                     variants = _extract_variant_table_rows(driver, recorder)
                     if not variants:
                         reason = "NO_VARIANTS_GRID: no variant input pairs found after verified Service Type selection."
-                        screenshot, html = _capture_assist_failure_artifacts(
-                            driver,
-                            recorder,
-                            prefix=f"variant_pairs_missing_{st_value}_{probe_id}",
-                            reason=reason,
-                        )
                         recorder.checker(
                             "extract_variants",
-                            "FAIL",
+                            "WARN",
                             CHECKER_VARIANT_TABLE_MISSING,
                             reason,
                             client_id=probe_id,
                             url=_normalize_text(getattr(driver, "current_url", "")),
-                            screenshot=screenshot,
-                            html=html,
                         )
-                        failure_row = _build_failure_record(
+                        skip_row = _build_failure_record(
                             service_type_id=st_value,
                             service_type_label=st_label,
                             probe_client_id=probe_id,
                             source_url=_normalize_text(getattr(driver, "current_url", "")) or source_url,
                             reason=reason,
+                            status="SKIP",
                         )
-                        all_variants.append(failure_row)
-                        _append_to_checkpoint_csv(run_id, [failure_row])
+                        all_variants.append(skip_row)
+                        _append_to_checkpoint_csv(run_id, [skip_row])
                         if on_row:
-                            on_row(failure_row)
+                            on_row(skip_row)
+                        no_grid_service_keys.add(service_key)
+                        service_has_valid_outcome = True
                         checkpoint["total_variant_rows"] = len(all_variants)
                         _update_checkpoint(run_id, checkpoint)
                         continue
@@ -2268,6 +2414,7 @@ def extract_service_type_variants(
                             screenshot=screenshot,
                             html=html,
                         )
+                        service_has_hard_failure = True
                     variant_records: List[Dict[str, str]] = []
                     for variant in variants:
                         record = _build_variant_record(
@@ -2285,10 +2432,19 @@ def extract_service_type_variants(
                     all_variants.extend(variant_records)
                     checkpoint["total_variant_rows"] = len(all_variants)
                     _update_checkpoint(run_id, checkpoint)
-                    service_pass = all(
-                        _normalize_text(r.get("Status", "PASS")).upper() == "PASS"
+                    statuses = [
+                        _normalize_text(r.get("Status", "PASS")).upper() or "PASS"
                         for r in variant_records
+                    ]
+                    pass_count = sum(1 for s in statuses if s == "PASS")
+                    fail_count = sum(1 for s in statuses if s == "FAIL")
+                    na_count = sum(1 for s in statuses if s == "NA")
+                    probe_ok = fail_count == 0 and (
+                        pass_count > 0 or (na_count == len(statuses) and na_count > 0)
                     )
+                    service_has_valid_outcome = True
+                    if not probe_ok:
+                        service_has_hard_failure = True
                     _emit(f"  → extracted {len(variants)} variants (probe {probe_id})", on_progress)
                 except Exception as e:
                     reason = f"Exception during Service Type extraction: {e}"
@@ -2327,10 +2483,13 @@ def extract_service_type_variants(
                     _append_to_checkpoint_csv(run_id, [failure_row])
                     if on_row:
                         on_row(failure_row)
+                    service_has_valid_outcome = True
+                    service_has_hard_failure = True
                     checkpoint["total_variant_rows"] = len(all_variants)
                     _update_checkpoint(run_id, checkpoint)
                     continue
 
+            service_pass = service_has_valid_outcome and not service_has_hard_failure
             # Mark this Service Type as attempted regardless of PASS/FAIL so
             # resume does not duplicate rows by re-attempting prior failures.
             processed_ids.add(service_key)
@@ -2361,6 +2520,19 @@ def extract_service_type_variants(
         _write_xlsx(all_variants, VARIANT_COLUMNS, paths["snapshot_xlsx"])
         _apply_xlsx_merged_cells(paths["snapshot_xlsx"])
 
+        # NO_VARIANTS_GRID audit CSV (non-failure SKIP rows).
+        no_grid_csv_path = paths["snapshot_csv"].with_name(
+            f"ServiceTypeVariants_no_grid_{run_id}.csv"
+        )
+        no_grid_rows = [
+            row
+            for row in all_variants
+            if _normalize_text(row.get("Status", "")).upper() == "SKIP"
+            and _normalize_text(row.get("Error Reason", "")).startswith("NO_VARIANTS_GRID")
+        ]
+        if no_grid_rows:
+            _write_csv(no_grid_rows, VARIANT_COLUMNS, no_grid_csv_path)
+
         # Conflicts CSV
         if conflict_variants:
             conflict_cols = VARIANT_COLUMNS
@@ -2379,6 +2551,7 @@ def extract_service_type_variants(
             "total_service_types": len(service_type_queue),
             "processed_service_types": len(processed_ids),
             "failed_service_types": len(failed_ids),
+            "no_variants_grid_service_types": len(no_grid_service_keys),
             "total_variant_rows": len(all_variants),
             "clean_variants": len(clean_variants),
             "conflict_variants": len(conflict_variants),
@@ -2388,6 +2561,7 @@ def extract_service_type_variants(
                 "latest_xlsx": str(paths["latest_xlsx"]),
                 "snapshot_csv": str(paths["snapshot_csv"]),
                 "snapshot_xlsx": str(paths["snapshot_xlsx"]),
+                "no_grid_csv": str(no_grid_csv_path),
                 "conflicts_csv": str(paths["conflicts_csv"]),
                 "diagnostics_dir": str(diag_dir),
             },

@@ -334,6 +334,35 @@ def test_extract_variant_table_rows_dynamic_does_not_require_six_pairs(fake_driv
     assert "prefix=travel" in travel_row["Error Reason"]
 
 
+def test_extract_variant_table_rows_marks_blank_row_na_when_other_rows_populated(fake_driver, tmp_path):
+    """Blank rate/code rows should be NA when another variant row is populated."""
+    recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
+
+    day_rate = _FakeInput(value="78.81", attributes={"data-cy": "day_rate-input"})
+    day_code = _FakeInput(value="01_803_0115_1_1", attributes={"data-cy": "day_code-input"})
+    night_rate = _FakeInput(value="", attributes={"data-cy": "night_rate-input"})
+    night_code = _FakeInput(value="", attributes={"data-cy": "night_code-input"})
+
+    fake_driver.set_element(
+        "css selector",
+        "input[data-cy$='_rate-input']",
+        [day_rate, night_rate],
+    )
+    fake_driver.set_element(
+        "css selector",
+        "input[data-cy$='_code-input']",
+        [day_code, night_code],
+    )
+
+    variants = discovery._extract_variant_table_rows(fake_driver, recorder)
+
+    assert len(variants) == 2
+    by_label = {row["Service Variant Label"]: row for row in variants}
+    assert by_label["Weekday Daytime/Individual Code"]["Status"] == "PASS"
+    assert by_label["Weekday Night"]["Status"] == "NA"
+    assert "blank while other variants are populated" in by_label["Weekday Night"]["Error Reason"]
+
+
 def test_variant_fingerprint_includes_selected_label(fake_driver):
     """Fingerprint should change when selected combobox label changes even with same values."""
     selected_input = _FakeInput(value="Label A", attributes={"role": "combobox"})
@@ -595,7 +624,7 @@ def test_build_service_type_queue_uses_assist_order_and_handles_unmapped_duplica
 
     assert queue == [
         ("200", "Beta"),
-        ("UNMAPPED", "Gamma"),
+        (discovery._unmapped_service_type_id("Gamma"), "Gamma"),
         ("050", "Alpha"),
     ]
     assert any(c["code"] == discovery.CHECKER_SERVICE_TYPE_QUEUE_BUILT for c in recorder.checkers)
@@ -769,7 +798,38 @@ def test_conflict_detection_clean():
     # Should be clean (same parent, different variants)
     assert len(clean) == 2
     assert len(conflicts) == 0
-    assert all(v["Conflict"] == "NO" for v in clean)
+
+
+def test_conflict_detection_ignores_non_pass_rows():
+    """Conflict detection should ignore NA/SKIP rows like FAIL rows."""
+    variants = [
+        {
+            "Parent Service Type ID": "9001",
+            "Service Variant Label": "Weekday Daytime",
+            "Rate": "",
+            "Code": "",
+            "Status": "NA",
+        },
+        {
+            "Parent Service Type ID": "9001",
+            "Service Variant Label": "Weekday Evening",
+            "Rate": "",
+            "Code": "",
+            "Status": "SKIP",
+        },
+        {
+            "Parent Service Type ID": "9001",
+            "Service Variant Label": "Weekday Night",
+            "Rate": "",
+            "Code": "",
+            "Status": "FAIL",
+        },
+    ]
+
+    clean, conflicts = discovery._detect_conflicts(variants)
+    assert len(conflicts) == 0
+    assert len(clean) == 3
+    assert all(v["Conflict"] == "N/A" for v in clean)
 
 
 def test_conflict_detection_conflicts():

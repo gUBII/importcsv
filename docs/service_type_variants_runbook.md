@@ -33,10 +33,11 @@ This runbook covers reliable extraction of Service Type variants from Assist / a
   - combobox interaction completes (`aria-expanded=false`), and
   - selected label in the React control (input value or single-value display) matches intended label.
 - Queue construction is Assist-first:
-  - collect Service Type labels from Assist dropdown (`div[role='option']`) in UI order.
+  - open Service Type listbox once and collect labels from `div[role='option']`.
+  - listbox collection scrolls to the end to handle virtualized dropdown rendering.
   - intersect those labels with reference index IDs.
   - iterate intersection queue in Assist order (not raw reference order).
-  - unmatched Assist labels are queued as `UNMAPPED` and logged for investigation.
+  - unmatched Assist labels are queued with stable synthetic IDs (`UNMAPPED::<token>::<hash>`) and logged for investigation.
 - Each Service Type outputs:
   - `Parent Service Type ID`
   - `Parent Service Type Label`
@@ -112,7 +113,6 @@ Per run directory:
 - HTML / PNG artifacts saved for:
   - TP1 Add Appointment route and iframe-switch failures
   - per-Service-Type selection failures
-  - missing variant inputs (`NO_VARIANTS_GRID`)
   - incomplete variant values (row-level FAIL reasons)
   - unhandled run failures
 
@@ -131,11 +131,17 @@ Queue diagnostics checkers/events:
 
 - `NO_VARIANTS_GRID`:
   - emitted when selection is verified but no `*_rate-input`/`*_code-input` pairs are present.
-  - extractor writes a parent FAIL row and continues.
-- Incomplete variant rows:
-  - extractor still emits discovered variant rows.
-  - rows missing `rate` and/or `code` are emitted as `Status=FAIL` with per-row `Error Reason` including prefix/label.
-  - conflict detection ignores FAIL rows.
+  - extractor writes a parent `Status=SKIP` row and continues.
+  - these rows are exported separately to:
+    - `~/LineItemRates/ServiceTypeTruth/variants/snapshots/ServiceTypeVariants_no_grid_<run_id>.csv`
+- Row status model:
+  - `PASS`: row has complete rate + code values.
+  - `NA`: row is structurally/applicability blank (disabled/readonly, or blank while sibling rows are populated).
+  - `FAIL`: row is unexpectedly incomplete or extraction failed for that row.
+  - `SKIP`: parent Service Type has no variants grid for this editor schema.
+- Conflict detection:
+  - only `Status=PASS` rows participate in conflict checks.
+  - `FAIL` / `NA` / `SKIP` rows are marked `Conflict=N/A`.
 
 ## Validation against UI
 
