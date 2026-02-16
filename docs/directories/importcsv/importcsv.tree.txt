@@ -1,6 +1,6 @@
 # Directory Tree Snapshot
 source: /Users/moofasa/importcsv
-generated_utc: 2026-02-16T00:21:30.763786+00:00
+generated_utc: 2026-02-16T01:06:27.516055+00:00
 max_depth: 3
 max_entries_per_dir: 200
 
@@ -448,13 +448,6 @@ max_entries_per_dir: 200
   - .githooks/
     - pre-commit
     - pre-push
-  - .pytest_cache/
-    - v/
-      - cache/
-        - ... (max depth reached)
-    - .gitignore
-    - CACHEDIR.TAG
-    - README.md
   - .tmp.drivedownload/
   - .tmp.driveupload/
     - 22907
@@ -659,16 +652,6 @@ max_entries_per_dir: 200
     - 23503
     - ... (1587 more entries)
   - .tmp.driveupload._hold/
-  - __pycache__/
-    - appointment_item_discovery.cpython-312.pyc
-    - build.cpython-312.pyc
-    - Declutter.cpython-312.pyc
-    - importcsv.cpython-312.pyc
-    - line_item_paths.cpython-312.pyc
-    - purger_state.cpython-312.pyc
-    - selenium_helpers.cpython-312.pyc
-    - service_type_rate_extractor.cpython-312.pyc
-    - truth_store.cpython-312.pyc
   - assets/
     - Export_Clients_1762997897530.xlsx
     - Export_Clients_1762997981929.xlsx
@@ -677,43 +660,6 @@ max_entries_per_dir: 200
     - turnpoint_purger_art.png
     - turnpoint_thumbnail.svg
     - turnpoint_ui_v201.png
-  - build/
-    - turnpoint_cli/
-      - localpycs/
-        - ... (max depth reached)
-      - Analysis-01.toc
-      - base_library.zip
-      - EXE-01.toc
-      - PKG-01.toc
-      - PYZ-01.pyz
-      - PYZ-01.toc
-      - TurnpointPurgerCLI.pkg
-      - warn-turnpoint_cli.txt
-      - xref-turnpoint_cli.html
-    - turnpoint_gui/
-      - localpycs/
-        - ... (max depth reached)
-      - Analysis-00.toc
-      - base_library.zip
-      - BUNDLE-00.toc
-      - EXE-00.toc
-      - PKG-00.toc
-      - PYZ-00.pyz
-      - PYZ-00.toc
-      - TurnpointPurger.pkg
-      - warn-turnpoint_gui.txt
-      - xref-turnpoint_gui.html
-  - dist/
-    - macos/
-      - TurnpointPurger.app/
-        - ... (max depth reached)
-      - TurnpointPurger
-      - TurnpointPurgerCLI
-    - TurnpointPurger.app/
-      - Contents/
-        - ... (max depth reached)
-    - TurnpointPurger
-    - TurnpointPurgerCLI
   - docs/
     - directories/
       - importcsv/
@@ -754,14 +700,6 @@ max_entries_per_dir: 200
     - export_directory_trees.py
     - install_git_guardrails.sh
   - tests/
-    - __pycache__/
-      - test_appointment_item_discovery.cpython-312-pytest-7.4.4.pyc
-      - test_declutter.cpython-312-pytest-7.4.4.pyc
-      - test_line_item_paths.cpython-312-pytest-7.4.4.pyc
-      - test_package_collector.cpython-312-pytest-7.4.4.pyc
-      - test_purgeable_helpers.cpython-312-pytest-7.4.4.pyc
-      - test_service_type_rate_extractor_helpers.cpython-312-pytest-7.4.4.pyc
-      - test_turnpoint_purger_ui_helpers.cpython-312-pytest-7.4.4.pyc
     - test_appointment_item_discovery.py
     - test_declutter.py
     - test_line_item_paths.py
@@ -769,7 +707,6 @@ max_entries_per_dir: 200
     - test_purgeable_helpers.py
     - test_service_type_rate_extractor_helpers.py
     - test_turnpoint_purger_ui_helpers.py
-  - .DS_Store
   - .env
   - .gitignore
   - appointment_item_discovery.py
