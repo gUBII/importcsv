@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MAX_BYTES=$((50 * 1024 * 1024))
+
+blocked=()
+while IFS= read -r -d '' path; do
+  case "$path" in
+    .tmp.driveupload/*|.tmp.drivedownload/*)
+      blocked+=("$path")
+      ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if ((${#blocked[@]} > 0)); then
+  {
+    echo "ERROR: blocked temp files are staged:"
+    for p in "${blocked[@]}"; do
+      echo "  - $p"
+    done
+    echo
+    echo "Run: git restore --staged .tmp.driveupload .tmp.drivedownload"
+  } >&2
+  exit 1
+fi
+
+large=()
+while IFS= read -r -d '' path; do
+  size=$(git cat-file -s ":$path" 2>/dev/null || echo 0)
+  if [[ "$size" -gt "$MAX_BYTES" ]]; then
+    large+=("$path ($size bytes)")
+  fi
+done < <(git diff --cached --name-only --diff-filter=AM -z)
+
+if ((${#large[@]} > 0)); then
+  {
+    echo "ERROR: staged files exceed 50MB:"
+    for p in "${large[@]}"; do
+      echo "  - $p"
+    done
+  } >&2
+  exit 1
+fi
+
+exit 0
+

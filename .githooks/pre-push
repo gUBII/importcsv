@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MAX_BYTES=$((50 * 1024 * 1024))
+
+if git rev-parse --verify @{upstream} >/dev/null 2>&1; then
+  range="@{upstream}..HEAD"
+else
+  range="HEAD"
+fi
+
+blocked=()
+while IFS= read -r path; do
+  [[ -z "$path" ]] && continue
+  case "$path" in
+    .tmp.driveupload/*|.tmp.drivedownload/*)
+      blocked+=("$path")
+      ;;
+  esac
+done < <(git log --name-only --pretty=format: "$range" | sort -u)
+
+if ((${#blocked[@]} > 0)); then
+  {
+    echo "ERROR: push contains blocked temp paths:"
+    for p in "${blocked[@]}"; do
+      echo "  - $p"
+    done
+  } >&2
+  exit 1
+fi
+
+large=()
+while IFS= read -r line; do
+  obj="${line%% *}"
+  path="${line#* }"
+  [[ -z "$obj" || "$obj" == "$path" ]] && continue
+  size=$(git cat-file -s "$obj" 2>/dev/null || echo 0)
+  if [[ "$size" -gt "$MAX_BYTES" ]]; then
+    large+=("$path ($size bytes)")
+  fi
+done < <(git rev-list --objects "$range")
+
+if ((${#large[@]} > 0)); then
+  {
+    echo "ERROR: push contains blobs over 50MB:"
+    for p in "${large[@]}"; do
+      echo "  - $p"
+    done
+  } >&2
+  exit 1
+fi
+
+exit 0
+

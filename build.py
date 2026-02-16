@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent
 SPEC_GUI = ROOT / "turnpoint_gui.spec"
 SPEC_CLI = ROOT / "turnpoint_cli.spec"
 REQUIREMENTS_BUILD = ROOT / "requirements-build.txt"
+DIRECTORY_TREE_EXPORT_SCRIPT = ROOT / "scripts" / "export_directory_trees.py"
 
 
 def ensure_pyinstaller():
@@ -84,14 +85,30 @@ def run_spec(spec_path: Path) -> Path:
     return dist_dir
 
 
+def refresh_directory_tree_docs():
+    if not DIRECTORY_TREE_EXPORT_SCRIPT.exists():
+        print(f"Directory tree export script not found: {DIRECTORY_TREE_EXPORT_SCRIPT}")
+        return
+    print("Refreshing docs/directory tree snapshots...")
+    subprocess.check_call([sys.executable, str(DIRECTORY_TREE_EXPORT_SCRIPT)])
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build PyInstaller bundles.")
     parser.add_argument("--gui", action="store_true", help="Build the GUI app bundle.")
     parser.add_argument("--cli", action="store_true", help="Build the CLI console bundle.")
+    parser.add_argument(
+        "--skip-directory-tree-refresh",
+        action="store_true",
+        help="Skip regenerating docs/directory tree snapshots.",
+    )
     args = parser.parse_args()
 
     if not args.gui and not args.cli:
         parser.error("Select at least one target via --gui and/or --cli.")
+
+    if not args.skip_directory_tree_refresh:
+        refresh_directory_tree_docs()
 
     ensure_pyinstaller()
 

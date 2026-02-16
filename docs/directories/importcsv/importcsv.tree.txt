@@ -1,0 +1,798 @@
+# Directory Tree Snapshot
+source: /Users/moofasa/importcsv
+generated_utc: 2026-02-16T00:21:30.763786+00:00
+max_depth: 3
+max_entries_per_dir: 200
+
+- importcsv/
+  - .git/
+    - branches/
+    - hooks/
+      - applypatch-msg.sample
+      - commit-msg.sample
+      - fsmonitor-watchman.sample
+      - post-update.sample
+      - pre-applypatch.sample
+      - pre-commit.sample
+      - pre-merge-commit.sample
+      - pre-push.sample
+      - pre-rebase.sample
+      - pre-receive.sample
+      - prepare-commit-msg.sample
+      - push-to-checkout.sample
+      - sendemail-validate.sample
+      - update.sample
+    - info/
+      - exclude
+    - logs/
+      - refs/
+        - ... (max depth reached)
+      - HEAD
+    - objects/
+      - 00/
+        - ... (max depth reached)
+      - 01/
+        - ... (max depth reached)
+      - 02/
+        - ... (max depth reached)
+      - 03/
+        - ... (max depth reached)
+      - 04/
+        - ... (max depth reached)
+      - 05/
+        - ... (max depth reached)
+      - 06/
+        - ... (max depth reached)
+      - 07/
+        - ... (max depth reached)
+      - 08/
+        - ... (max depth reached)
+      - 09/
+        - ... (max depth reached)
+      - 0a/
+        - ... (max depth reached)
+      - 0b/
+        - ... (max depth reached)
+      - 0c/
+        - ... (max depth reached)
+      - 0d/
+        - ... (max depth reached)
+      - 0e/
+        - ... (max depth reached)
+      - 0f/
+        - ... (max depth reached)
+      - 10/
+        - ... (max depth reached)
+      - 11/
+        - ... (max depth reached)
+      - 12/
+        - ... (max depth reached)
+      - 13/
+        - ... (max depth reached)
+      - 14/
+        - ... (max depth reached)
+      - 15/
+        - ... (max depth reached)
+      - 16/
+        - ... (max depth reached)
+      - 17/
+        - ... (max depth reached)
+      - 18/
+        - ... (max depth reached)
+      - 19/
+        - ... (max depth reached)
+      - 1a/
+        - ... (max depth reached)
+      - 1b/
+        - ... (max depth reached)
+      - 1c/
+        - ... (max depth reached)
+      - 1d/
+        - ... (max depth reached)
+      - 1e/
+        - ... (max depth reached)
+      - 1f/
+        - ... (max depth reached)
+      - 20/
+        - ... (max depth reached)
+      - 21/
+        - ... (max depth reached)
+      - 22/
+        - ... (max depth reached)
+      - 23/
+        - ... (max depth reached)
+      - 24/
+        - ... (max depth reached)
+      - 25/
+        - ... (max depth reached)
+      - 26/
+        - ... (max depth reached)
+      - 27/
+        - ... (max depth reached)
+      - 28/
+        - ... (max depth reached)
+      - 29/
+        - ... (max depth reached)
+      - 2a/
+        - ... (max depth reached)
+      - 2b/
+        - ... (max depth reached)
+      - 2c/
+        - ... (max depth reached)
+      - 2d/
+        - ... (max depth reached)
+      - 2e/
+        - ... (max depth reached)
+      - 2f/
+        - ... (max depth reached)
+      - 30/
+        - ... (max depth reached)
+      - 31/
+        - ... (max depth reached)
+      - 32/
+        - ... (max depth reached)
+      - 33/
+        - ... (max depth reached)
+      - 34/
+        - ... (max depth reached)
+      - 35/
+        - ... (max depth reached)
+      - 36/
+        - ... (max depth reached)
+      - 37/
+        - ... (max depth reached)
+      - 38/
+        - ... (max depth reached)
+      - 39/
+        - ... (max depth reached)
+      - 3a/
+        - ... (max depth reached)
+      - 3b/
+        - ... (max depth reached)
+      - 3c/
+        - ... (max depth reached)
+      - 3d/
+        - ... (max depth reached)
+      - 3e/
+        - ... (max depth reached)
+      - 3f/
+        - ... (max depth reached)
+      - 40/
+        - ... (max depth reached)
+      - 41/
+        - ... (max depth reached)
+      - 42/
+        - ... (max depth reached)
+      - 43/
+        - ... (max depth reached)
+      - 44/
+        - ... (max depth reached)
+      - 45/
+        - ... (max depth reached)
+      - 46/
+        - ... (max depth reached)
+      - 47/
+        - ... (max depth reached)
+      - 48/
+        - ... (max depth reached)
+      - 49/
+        - ... (max depth reached)
+      - 4a/
+        - ... (max depth reached)
+      - 4b/
+        - ... (max depth reached)
+      - 4c/
+        - ... (max depth reached)
+      - 4d/
+        - ... (max depth reached)
+      - 4e/
+        - ... (max depth reached)
+      - 4f/
+        - ... (max depth reached)
+      - 50/
+        - ... (max depth reached)
+      - 51/
+        - ... (max depth reached)
+      - 52/
+        - ... (max depth reached)
+      - 53/
+        - ... (max depth reached)
+      - 54/
+        - ... (max depth reached)
+      - 55/
+        - ... (max depth reached)
+      - 56/
+        - ... (max depth reached)
+      - 57/
+        - ... (max depth reached)
+      - 58/
+        - ... (max depth reached)
+      - 59/
+        - ... (max depth reached)
+      - 5a/
+        - ... (max depth reached)
+      - 5b/
+        - ... (max depth reached)
+      - 5c/
+        - ... (max depth reached)
+      - 5d/
+        - ... (max depth reached)
+      - 5e/
+        - ... (max depth reached)
+      - 5f/
+        - ... (max depth reached)
+      - 60/
+        - ... (max depth reached)
+      - 61/
+        - ... (max depth reached)
+      - 62/
+        - ... (max depth reached)
+      - 63/
+        - ... (max depth reached)
+      - 64/
+        - ... (max depth reached)
+      - 65/
+        - ... (max depth reached)
+      - 66/
+        - ... (max depth reached)
+      - 67/
+        - ... (max depth reached)
+      - 68/
+        - ... (max depth reached)
+      - 69/
+        - ... (max depth reached)
+      - 6a/
+        - ... (max depth reached)
+      - 6b/
+        - ... (max depth reached)
+      - 6c/
+        - ... (max depth reached)
+      - 6d/
+        - ... (max depth reached)
+      - 6e/
+        - ... (max depth reached)
+      - 6f/
+        - ... (max depth reached)
+      - 70/
+        - ... (max depth reached)
+      - 71/
+        - ... (max depth reached)
+      - 73/
+        - ... (max depth reached)
+      - 74/
+        - ... (max depth reached)
+      - 75/
+        - ... (max depth reached)
+      - 76/
+        - ... (max depth reached)
+      - 77/
+        - ... (max depth reached)
+      - 78/
+        - ... (max depth reached)
+      - 79/
+        - ... (max depth reached)
+      - 7a/
+        - ... (max depth reached)
+      - 7b/
+        - ... (max depth reached)
+      - 7c/
+        - ... (max depth reached)
+      - 7d/
+        - ... (max depth reached)
+      - 7e/
+        - ... (max depth reached)
+      - 7f/
+        - ... (max depth reached)
+      - 80/
+        - ... (max depth reached)
+      - 81/
+        - ... (max depth reached)
+      - 82/
+        - ... (max depth reached)
+      - 83/
+        - ... (max depth reached)
+      - 84/
+        - ... (max depth reached)
+      - 85/
+        - ... (max depth reached)
+      - 86/
+        - ... (max depth reached)
+      - 87/
+        - ... (max depth reached)
+      - 88/
+        - ... (max depth reached)
+      - 89/
+        - ... (max depth reached)
+      - 8a/
+        - ... (max depth reached)
+      - 8b/
+        - ... (max depth reached)
+      - 8c/
+        - ... (max depth reached)
+      - 8d/
+        - ... (max depth reached)
+      - 8e/
+        - ... (max depth reached)
+      - 8f/
+        - ... (max depth reached)
+      - 90/
+        - ... (max depth reached)
+      - 92/
+        - ... (max depth reached)
+      - 93/
+        - ... (max depth reached)
+      - 94/
+        - ... (max depth reached)
+      - 95/
+        - ... (max depth reached)
+      - 96/
+        - ... (max depth reached)
+      - 97/
+        - ... (max depth reached)
+      - 98/
+        - ... (max depth reached)
+      - 99/
+        - ... (max depth reached)
+      - 9a/
+        - ... (max depth reached)
+      - 9b/
+        - ... (max depth reached)
+      - 9c/
+        - ... (max depth reached)
+      - 9d/
+        - ... (max depth reached)
+      - 9e/
+        - ... (max depth reached)
+      - 9f/
+        - ... (max depth reached)
+      - a0/
+        - ... (max depth reached)
+      - a1/
+        - ... (max depth reached)
+      - a2/
+        - ... (max depth reached)
+      - a3/
+        - ... (max depth reached)
+      - a4/
+        - ... (max depth reached)
+      - a5/
+        - ... (max depth reached)
+      - a6/
+        - ... (max depth reached)
+      - a7/
+        - ... (max depth reached)
+      - a8/
+        - ... (max depth reached)
+      - a9/
+        - ... (max depth reached)
+      - aa/
+        - ... (max depth reached)
+      - ab/
+        - ... (max depth reached)
+      - ac/
+        - ... (max depth reached)
+      - ad/
+        - ... (max depth reached)
+      - ae/
+        - ... (max depth reached)
+      - af/
+        - ... (max depth reached)
+      - b0/
+        - ... (max depth reached)
+      - b1/
+        - ... (max depth reached)
+      - b2/
+        - ... (max depth reached)
+      - b3/
+        - ... (max depth reached)
+      - b4/
+        - ... (max depth reached)
+      - b5/
+        - ... (max depth reached)
+      - b6/
+        - ... (max depth reached)
+      - b7/
+        - ... (max depth reached)
+      - b8/
+        - ... (max depth reached)
+      - b9/
+        - ... (max depth reached)
+      - ba/
+        - ... (max depth reached)
+      - bb/
+        - ... (max depth reached)
+      - bc/
+        - ... (max depth reached)
+      - bd/
+        - ... (max depth reached)
+      - be/
+        - ... (max depth reached)
+      - bf/
+        - ... (max depth reached)
+      - c0/
+        - ... (max depth reached)
+      - c1/
+        - ... (max depth reached)
+      - c2/
+        - ... (max depth reached)
+      - c3/
+        - ... (max depth reached)
+      - c4/
+        - ... (max depth reached)
+      - c5/
+        - ... (max depth reached)
+      - c6/
+        - ... (max depth reached)
+      - c7/
+        - ... (max depth reached)
+      - c8/
+        - ... (max depth reached)
+      - c9/
+        - ... (max depth reached)
+      - ... (56 more entries)
+    - refs/
+      - heads/
+        - ... (max depth reached)
+      - remotes/
+        - ... (max depth reached)
+      - tags/
+        - ... (max depth reached)
+    - COMMIT_EDITMSG
+    - config
+    - description
+    - FETCH_HEAD
+    - HEAD
+    - index
+    - ORIG_HEAD
+    - packed-refs
+  - .githooks/
+    - pre-commit
+    - pre-push
+  - .pytest_cache/
+    - v/
+      - cache/
+        - ... (max depth reached)
+    - .gitignore
+    - CACHEDIR.TAG
+    - README.md
+  - .tmp.drivedownload/
+  - .tmp.driveupload/
+    - 22907
+    - 22909
+    - 22913
+    - 22921
+    - 22923
+    - 22931
+    - 22935
+    - 22943
+    - 22947
+    - 22951
+    - 22995
+    - 22997
+    - 23013
+    - 23015
+    - 23017
+    - 23047
+    - 23051
+    - 23053
+    - 23089
+    - 23091
+    - 23093
+    - 23143
+    - 23147
+    - 23149
+    - 23151
+    - 23153
+    - 23155
+    - 23157
+    - 23159
+    - 23161
+    - 23163
+    - 23165
+    - 23167
+    - 23169
+    - 23171
+    - 23173
+    - 23175
+    - 23177
+    - 23179
+    - 23181
+    - 23183
+    - 23185
+    - 23187
+    - 23189
+    - 23191
+    - 23193
+    - 23195
+    - 23197
+    - 23199
+    - 23201
+    - 23203
+    - 23205
+    - 23207
+    - 23209
+    - 23211
+    - 23213
+    - 23215
+    - 23217
+    - 23219
+    - 23221
+    - 23223
+    - 23225
+    - 23227
+    - 23231
+    - 23233
+    - 23235
+    - 23237
+    - 23239
+    - 23241
+    - 23243
+    - 23245
+    - 23247
+    - 23249
+    - 23251
+    - 23253
+    - 23255
+    - 23257
+    - 23259
+    - 23261
+    - 23263
+    - 23265
+    - 23267
+    - 23269
+    - 23271
+    - 23273
+    - 23275
+    - 23277
+    - 23279
+    - 23281
+    - 23283
+    - 23285
+    - 23287
+    - 23289
+    - 23291
+    - 23293
+    - 23295
+    - 23297
+    - 23299
+    - 23301
+    - 23303
+    - 23305
+    - 23307
+    - 23309
+    - 23311
+    - 23313
+    - 23315
+    - 23317
+    - 23319
+    - 23321
+    - 23323
+    - 23325
+    - 23327
+    - 23329
+    - 23331
+    - 23333
+    - 23335
+    - 23337
+    - 23339
+    - 23341
+    - 23343
+    - 23345
+    - 23347
+    - 23349
+    - 23351
+    - 23353
+    - 23355
+    - 23357
+    - 23359
+    - 23361
+    - 23363
+    - 23365
+    - 23367
+    - 23369
+    - 23371
+    - 23373
+    - 23375
+    - 23377
+    - 23379
+    - 23381
+    - 23383
+    - 23385
+    - 23387
+    - 23389
+    - 23391
+    - 23393
+    - 23395
+    - 23397
+    - 23399
+    - 23401
+    - 23403
+    - 23405
+    - 23407
+    - 23409
+    - 23411
+    - 23413
+    - 23415
+    - 23417
+    - 23419
+    - 23421
+    - 23423
+    - 23425
+    - 23427
+    - 23429
+    - 23431
+    - 23433
+    - 23435
+    - 23437
+    - 23439
+    - 23441
+    - 23443
+    - 23445
+    - 23447
+    - 23449
+    - 23451
+    - 23453
+    - 23455
+    - 23457
+    - 23459
+    - 23461
+    - 23463
+    - 23465
+    - 23467
+    - 23469
+    - 23471
+    - 23473
+    - 23475
+    - 23477
+    - 23479
+    - 23481
+    - 23483
+    - 23485
+    - 23487
+    - 23489
+    - 23491
+    - 23493
+    - 23495
+    - 23497
+    - 23499
+    - 23501
+    - 23503
+    - ... (1587 more entries)
+  - .tmp.driveupload._hold/
+  - __pycache__/
+    - appointment_item_discovery.cpython-312.pyc
+    - build.cpython-312.pyc
+    - Declutter.cpython-312.pyc
+    - importcsv.cpython-312.pyc
+    - line_item_paths.cpython-312.pyc
+    - purger_state.cpython-312.pyc
+    - selenium_helpers.cpython-312.pyc
+    - service_type_rate_extractor.cpython-312.pyc
+    - truth_store.cpython-312.pyc
+  - assets/
+    - Export_Clients_1762997897530.xlsx
+    - Export_Clients_1762997981929.xlsx
+    - maindp.gif
+    - nexismascot.png
+    - turnpoint_purger_art.png
+    - turnpoint_thumbnail.svg
+    - turnpoint_ui_v201.png
+  - build/
+    - turnpoint_cli/
+      - localpycs/
+        - ... (max depth reached)
+      - Analysis-01.toc
+      - base_library.zip
+      - EXE-01.toc
+      - PKG-01.toc
+      - PYZ-01.pyz
+      - PYZ-01.toc
+      - TurnpointPurgerCLI.pkg
+      - warn-turnpoint_cli.txt
+      - xref-turnpoint_cli.html
+    - turnpoint_gui/
+      - localpycs/
+        - ... (max depth reached)
+      - Analysis-00.toc
+      - base_library.zip
+      - BUNDLE-00.toc
+      - EXE-00.toc
+      - PKG-00.toc
+      - PYZ-00.pyz
+      - PYZ-00.toc
+      - TurnpointPurger.pkg
+      - warn-turnpoint_gui.txt
+      - xref-turnpoint_gui.html
+  - dist/
+    - macos/
+      - TurnpointPurger.app/
+        - ... (max depth reached)
+      - TurnpointPurger
+      - TurnpointPurgerCLI
+    - TurnpointPurger.app/
+      - Contents/
+        - ... (max depth reached)
+    - TurnpointPurger
+    - TurnpointPurgerCLI
+  - docs/
+    - directories/
+      - importcsv/
+        - ... (max depth reached)
+      - moofasa/
+        - ... (max depth reached)
+      - README.md
+    - contxst_architecture_and_dataflow.md
+    - contxst_build_and_release.md
+    - contxst_cli_and_gui_workflows.md
+    - contxst_configuration_and_paths.md
+    - contxst_docs_index.md
+    - contxst_module_reference.md
+    - contxst_repository_overview.md
+    - contxst_risks_and_recommendations.md
+    - contxst_testing_and_quality.md
+    - service_type_variants_runbook.md
+    - TurnpointPurger Automation Suite – Technical Documentation.docx
+    - TurnpointPurger_Notes.md
+    - TurnpointPurger_Technical_Documentation.md
+  - for_dev/
+    - 20260214_105040_VARIANTS_bundle/
+      - 20260214_105040_VARIANTS/
+        - ... (max depth reached)
+      - checkpoint_20260214_105040_VARIANTS.json
+      - README.txt
+      - ServiceTypeVariants_latest.csv
+      - ServiceTypeVariants_latest.xlsx
+      - variants_append_20260214_105040_VARIANTS.csv
+    - reference_latest/
+      - ServiceTypes_latest.csv
+      - ServiceTypes_latest.xlsx
+    - for_dev_20260214_105040_VARIANTS_bundle.zip
+    - for_dev_reference_latest.zip
+  - FormatforClient(Nexis)/
+    - clients-data.csv
+  - scripts/
+    - export_directory_trees.py
+    - install_git_guardrails.sh
+  - tests/
+    - __pycache__/
+      - test_appointment_item_discovery.cpython-312-pytest-7.4.4.pyc
+      - test_declutter.cpython-312-pytest-7.4.4.pyc
+      - test_line_item_paths.cpython-312-pytest-7.4.4.pyc
+      - test_package_collector.cpython-312-pytest-7.4.4.pyc
+      - test_purgeable_helpers.cpython-312-pytest-7.4.4.pyc
+      - test_service_type_rate_extractor_helpers.cpython-312-pytest-7.4.4.pyc
+      - test_turnpoint_purger_ui_helpers.cpython-312-pytest-7.4.4.pyc
+    - test_appointment_item_discovery.py
+    - test_declutter.py
+    - test_line_item_paths.py
+    - test_package_collector.py
+    - test_purgeable_helpers.py
+    - test_service_type_rate_extractor_helpers.py
+    - test_turnpoint_purger_ui_helpers.py
+  - .DS_Store
+  - .env
+  - .gitignore
+  - appointment_item_discovery.py
+  - build.py
+  - client_manifest.example.csv
+  - combine_cleaned.py
+  - Declutter.py
+  - importcsv.py
+  - line_item_paths.py
+  - NDISBUDGETER.py
+  - nexis_submitter.py
+  - nexis_uploader.py
+  - PACKAGING.md
+  - purger_state.py
+  - pyproject.toml
+  - README.md
+  - requirements-build.txt
+  - selenium_helpers.py
+  - service_type_rate_extractor.py
+  - ServiceTypes_latest.csv
+  - truth_store.py
+  - turnpoint_cli.spec
+  - turnpoint_gui.spec
+  - turnpoint_purger_ui.py
+  - worker_purger.py
+  - worker_state.py
