@@ -1,16 +1,35 @@
 # Directory Tree Snapshot
 source: /Users/moofasa/LineItemRates
-generated_utc: 2026-02-16T01:27:47.944022+00:00
+generated_utc: 2026-02-16T13:08:01.386594+00:00
 max_depth: 3
 max_entries_per_dir: 200
 
 - LineItemRates/
+  - .tmp.drivedownload/
+    - 34599.1771213104749413
+    - 34599.1771213250059293
+    - 34599.1771213437241043
+    - 34599.1771213541088005
+    - 34599.1771214741983504
+    - 34599.1771215094887325
+    - 34599.1771215642096200
+    - 34599.1771216247129447
+    - 34599.1771216372543058
+    - 34599.1771216393346827
+    - 34601.1771213104752278
+    - 34601.1771213437238396
+    - 34601.1771213541084577
+    - 34601.1771214949724627
+    - 34601.1771215094883957
+    - 34601.1771215302613600
+    - 34601.1771216288912131
   - .tmp.driveupload/
   - ServiceTypeTruth/
     - _cleanup_logs/
     - _downloads/
       - service_types_export_20260215_152941.xlsx
       - service_types_export_20260215_170520.xlsx
+      - service_types_export_20260216_141734.xlsx
     - discovery/
       - diagnostics/
         - ... (max depth reached)
@@ -26,6 +45,7 @@ max_entries_per_dir: 200
     - exports/
       - manual/
         - ... (max depth reached)
+      - .DS_Store
     - reference/
       - latest/
         - ... (max depth reached)
