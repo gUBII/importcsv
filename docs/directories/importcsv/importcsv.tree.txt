@@ -1,6 +1,6 @@
 # Directory Tree Snapshot
 source: /Users/moofasa/importcsv
-generated_utc: 2026-02-16T01:06:27.516055+00:00
+generated_utc: 2026-02-16T01:27:47.922764+00:00
 max_depth: 3
 max_entries_per_dir: 200
 
@@ -689,9 +689,15 @@ max_entries_per_dir: 200
       - ServiceTypeVariants_latest.csv
       - ServiceTypeVariants_latest.xlsx
       - variants_append_20260214_105040_VARIANTS.csv
+    - failure_analysis_20260215_122859_VARIANTS/
+      - checkers.csv
+      - checkpoint_20260215_122859_VARIANTS.json
+      - events.jsonl
+      - variants_append_20260215_122859_VARIANTS.csv
     - reference_latest/
       - ServiceTypes_latest.csv
       - ServiceTypes_latest.xlsx
+    - failure_analysis_20260215_122859_VARIANTS.zip
     - for_dev_20260214_105040_VARIANTS_bundle.zip
     - for_dev_reference_latest.zip
   - FormatforClient(Nexis)/
