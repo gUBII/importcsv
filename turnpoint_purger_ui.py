@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 import queue
 import subprocess
@@ -61,6 +62,20 @@ from tksheet import Sheet
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 ART_FILENAME = "turnpoint_purger_art.png"
+BASE_SCREEN_WIDTH = 1920
+BASE_SCREEN_HEIGHT = 1080
+UI_SCALE_MIN = 0.80
+UI_SCALE_AUTO_MAX = 1.25
+UI_SCALE_MANUAL_MAX = 1.40
+UI_STATE_FILENAME = "ui_state.json"
+PAD_X = 24
+PAD_Y = 20
+RIGHT_PANEL_BASE_MIN_WIDTH = 440
+INSPECTOR_BASE_MIN_WIDTH = 360
+HEADER_FONT = ("Orbitron", 24, "bold")
+BODY_FONT = ("Space Mono", 10)
+BODY_BOLD_FONT = ("Space Mono", 10, "bold")
+CODE_FONT = ("JetBrains Mono", 10)
 ASCII_SIGNATURE = (
     "_____ _    ____   ___   _ _  _   _   ___      ____   ___  _     ___  \n"
     "|  ___/ \\  |  _ \\ / / | | | || | | \\ | \\ \\    / ___| / _ \\| |   / _ \\ \n"
@@ -75,9 +90,19 @@ class TurnpointPurgerUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("TurnpointPurger // Purging Control Surface")
-        self.geometry("1380x820")
+        self.ui_scale = 1.0
+        self.ui_scale_mode = "auto"
+        self.ui_scale_var = tk.DoubleVar(value=100.0)
+        self.ui_scale_percent_var = tk.StringVar(value="100%")
+        self.ui_scale_slider = None
+        self._suspend_ui_scale_callback = False
+        self._ui_scale_config_path = self._ui_scale_state_path()
+        self._styles_initialized = False
+        # Scaling is computed once at startup (auto/env/manual override) and can be changed live.
+        self._apply_ui_scale(self._load_initial_ui_scale(), persist=False)
+        self.geometry(f"{self._scaled_px(1380)}x{self._scaled_px(820)}")
         self.configure(bg="#03060f")
-        self.minsize(1200, 800)
+        self.minsize(self._scaled_px(1080), self._scaled_px(760))
 
         self.log_queue = queue.Queue()
         self.status_var = tk.StringVar(
@@ -165,10 +190,15 @@ class TurnpointPurgerUI(tk.Tk):
         self.rate_apply_button = None
         self.rate_group_var = tk.StringVar(value="All Groups")
         self.rate_group_combo = None
+        self.rate_variant_count_var = tk.StringVar(value="0 variants shown")
         self.rate_status_strip = None
         self.rate_inspector_frame = None
         self.rate_inspector_text = None
         self._inspector_link_frame = None
+        self.rate_autofit_button = None
+        self.rate_help_button = None
+        self._visible_truth_records = []
+        self._selected_truth_record = None
         self.rate_freeze_var = tk.BooleanVar(value=False)
         self.rate_pending_refresh = False
         self.rate_refresh_job_id = None
@@ -204,6 +234,157 @@ class TurnpointPurgerUI(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---------------------- UI Construction ---------------------- #
+    def _ui_scale_state_path(self) -> Path:
+        return line_item_paths.get_truth_root() / "_config" / UI_STATE_FILENAME
+
+    def _scaled_px(self, value: int) -> int:
+        return max(1, int(round(float(value) * float(self.ui_scale))))
+
+    def _clamp_ui_scale(self, value: float, max_scale: float = UI_SCALE_MANUAL_MAX) -> float:
+        return max(UI_SCALE_MIN, min(max_scale, float(value)))
+
+    def _compute_auto_ui_scale(self) -> float:
+        screen_w = max(1, int(self.winfo_screenwidth()))
+        screen_h = max(1, int(self.winfo_screenheight()))
+        ratio = min(screen_w / BASE_SCREEN_WIDTH, screen_h / BASE_SCREEN_HEIGHT)
+        return self._clamp_ui_scale(ratio, max_scale=UI_SCALE_AUTO_MAX)
+
+    def _load_ui_scale_state(self) -> dict:
+        path = self._ui_scale_config_path
+        if not path.exists():
+            return {}
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+            if isinstance(raw, dict):
+                return raw
+        except Exception:
+            pass
+        return {}
+
+    def _save_ui_scale_state(self, manual_scale: float) -> None:
+        path = self._ui_scale_config_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "manual_scale": round(float(manual_scale), 4),
+                        "saved_at_utc": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    },
+                    fh,
+                    indent=2,
+                )
+        except Exception:
+            pass
+
+    def _clear_ui_scale_state(self) -> None:
+        try:
+            if self._ui_scale_config_path.exists():
+                self._ui_scale_config_path.unlink()
+        except Exception:
+            pass
+
+    def _load_initial_ui_scale(self) -> float:
+        auto_scale = self._compute_auto_ui_scale()
+        # TURNPOINTPURGER_UI_SCALE can force a startup scale (e.g. 1.25).
+        env_raw = (os.getenv("TURNPOINTPURGER_UI_SCALE", "") or "").strip()
+        if env_raw:
+            try:
+                env_scale = self._clamp_ui_scale(float(env_raw))
+                self.ui_scale_mode = "env"
+                self.ui_scale_var.set(env_scale * 100.0)
+                self.ui_scale_percent_var.set(f"{int(round(env_scale * 100.0))}%")
+                return env_scale
+            except Exception:
+                pass
+
+        state = self._load_ui_scale_state()
+        manual = state.get("manual_scale")
+        if isinstance(manual, (int, float)):
+            manual_scale = self._clamp_ui_scale(float(manual))
+            self.ui_scale_mode = "manual"
+            self.ui_scale_var.set(manual_scale * 100.0)
+            self.ui_scale_percent_var.set(f"{int(round(manual_scale * 100.0))}%")
+            return manual_scale
+
+        self.ui_scale_mode = "auto"
+        self.ui_scale_var.set(auto_scale * 100.0)
+        self.ui_scale_percent_var.set(f"{int(round(auto_scale * 100.0))}%")
+        return auto_scale
+
+    def _apply_ui_scale(self, scale: float, *, persist: bool = True) -> None:
+        scale = self._clamp_ui_scale(scale)
+        self.ui_scale = scale
+        # Global Tk scaling handles DPI/monitor differences for fonts/widgets.
+        try:
+            self.tk.call("tk", "scaling", scale)
+        except Exception:
+            pass
+        try:
+            self.minsize(self._scaled_px(1080), self._scaled_px(760))
+        except Exception:
+            pass
+        percent = int(round(scale * 100.0))
+        self.ui_scale_var.set(float(percent))
+        self.ui_scale_percent_var.set(f"{percent}%")
+        if self.ui_scale_slider:
+            try:
+                self._suspend_ui_scale_callback = True
+                self.ui_scale_slider.set(percent)
+                self._suspend_ui_scale_callback = False
+                self.ui_scale_slider.configure(length=self._scaled_px(220))
+            except Exception:
+                self._suspend_ui_scale_callback = False
+                pass
+        for tab_attr in ("client_tab", "worker_tab", "nexis_tab"):
+            tab = getattr(self, tab_attr, None)
+            if tab:
+                try:
+                    tab.columnconfigure(
+                        1, weight=0, minsize=self._scaled_px(RIGHT_PANEL_BASE_MIN_WIDTH)
+                    )
+                except Exception:
+                    pass
+        if getattr(self, "rate_tab", None):
+            try:
+                self.rate_tab.columnconfigure(
+                    1, weight=0, minsize=self._scaled_px(INSPECTOR_BASE_MIN_WIDTH)
+                )
+            except Exception:
+                pass
+        if self.truth_grid:
+            self._configure_truth_grid_columns()
+        if self._styles_initialized:
+            self._setup_styles()
+        if persist:
+            if self.ui_scale_mode == "manual":
+                self._save_ui_scale_state(scale)
+            elif self.ui_scale_mode == "auto":
+                self._clear_ui_scale_state()
+
+    def _handle_ui_scale_changed(self, value: str) -> None:
+        if self._suspend_ui_scale_callback:
+            return
+        try:
+            scale = self._clamp_ui_scale(float(value) / 100.0)
+        except Exception:
+            return
+        self.ui_scale_mode = "manual"
+        self._apply_ui_scale(scale, persist=True)
+
+    def _handle_ui_scale_reset_auto(self) -> None:
+        env_raw = (os.getenv("TURNPOINTPURGER_UI_SCALE", "") or "").strip()
+        if env_raw:
+            try:
+                self.ui_scale_mode = "env"
+                self._apply_ui_scale(float(env_raw), persist=False)
+                return
+            except Exception:
+                pass
+        self.ui_scale_mode = "auto"
+        self._apply_ui_scale(self._compute_auto_ui_scale(), persist=True)
+
     def _setup_styles(self):
         style = ttk.Style(self)
         try:
@@ -231,7 +412,7 @@ class TurnpointPurgerUI(tk.Tk):
         style.configure(
             "Cyber.TButton",
             font=("SF Pro Display", 15, "bold"),
-            padding=8,
+            padding=self._scaled_px(8),
             background="#0f172a",
             foreground="#f7fbff",
         )
@@ -250,7 +431,7 @@ class TurnpointPurgerUI(tk.Tk):
             background="#050b16",
             foreground="#d8e5ff",
             font=("Space Mono", 11),
-            padding=6,
+            padding=self._scaled_px(6),
         )
         style.map(
             "Cyber.TCheckbutton",
@@ -260,7 +441,7 @@ class TurnpointPurgerUI(tk.Tk):
         style.configure(
             "Danger.TButton",
             font=("SF Pro Display", 13, "bold"),
-            padding=6,
+            padding=self._scaled_px(6),
             background="#2a0a10",
             foreground="#ffdfe5",
         )
@@ -274,6 +455,7 @@ class TurnpointPurgerUI(tk.Tk):
                 ("disabled", "#6f4b54"),
             ],
         )
+        self._styles_initialized = True
 
     def _build_scrollable_root(self):
         container = tk.Frame(self, bg=self["bg"])
@@ -289,10 +471,14 @@ class TurnpointPurgerUI(tk.Tk):
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
-        canvas.create_window((0, 0), window=inner, anchor="nw")
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+        canvas.bind(
+            "<Configure>",
+            lambda event, cid=window_id: canvas.itemconfigure(cid, width=event.width),
+        )
 
         canvas.bind_all("<MouseWheel>", self._on_mousewheel)
 
@@ -310,7 +496,7 @@ class TurnpointPurgerUI(tk.Tk):
             try:
                 self.attributes("-zoomed", True)
             except tk.TclError:
-                self.attributes("-fullscreen", False)
+                pass
 
     def _bundle_buttons_ready(self):
         return bool(self.credential_username and self.credential_password)
@@ -328,13 +514,61 @@ class TurnpointPurgerUI(tk.Tk):
 
     def _build_layout(self, parent):
         container = tk.Frame(parent, bg=self["bg"])
-        container.pack(fill="both", expand=True, padx=24, pady=20)
+        container.pack(fill="both", expand=True, padx=PAD_X, pady=PAD_Y)
+
+        top_bar = tk.Frame(container, bg=self["bg"])
+        top_bar.pack(fill="x", pady=(0, 8))
+        tk.Label(
+            top_bar,
+            text="UI Scale",
+            fg="#9fe3ff",
+            bg=self["bg"],
+            font=("Space Mono", 10, "bold"),
+        ).pack(side="left")
+        self.ui_scale_slider = tk.Scale(
+            top_bar,
+            from_=80,
+            to=140,
+            orient="horizontal",
+            showvalue=False,
+            resolution=1,
+            length=self._scaled_px(220),
+            bg=self["bg"],
+            fg="#d8f1ff",
+            troughcolor="#0a1324",
+            highlightthickness=0,
+            activebackground="#2266cc",
+            command=self._handle_ui_scale_changed,
+        )
+        self._suspend_ui_scale_callback = True
+        self.ui_scale_slider.set(self.ui_scale_var.get())
+        self._suspend_ui_scale_callback = False
+        self.ui_scale_slider.pack(side="left", padx=(10, 8))
+        tk.Label(
+            top_bar,
+            textvariable=self.ui_scale_percent_var,
+            fg="#d8f1ff",
+            bg=self["bg"],
+            font=("Space Mono", 10),
+            width=6,
+            anchor="w",
+        ).pack(side="left")
+        ttk.Button(
+            top_bar,
+            text="Reset Auto",
+            style="Cyber.TButton",
+            command=self._handle_ui_scale_reset_auto,
+        ).pack(side="left", padx=(8, 0))
 
         notebook = ttk.Notebook(container)
         client_tab = tk.Frame(notebook, bg="#050b16")
         worker_tab = tk.Frame(notebook, bg="#050b16")
         nexis_tab = tk.Frame(notebook, bg="#050b16")
         rate_tab = tk.Frame(notebook, bg="#050b16")
+        self.client_tab = client_tab
+        self.worker_tab = worker_tab
+        self.nexis_tab = nexis_tab
+        self.rate_tab = rate_tab
         notebook.add(client_tab, text="Client Purger")
         notebook.add(worker_tab, text="Worker Purger")
         notebook.add(nexis_tab, text="NexisUploader (Employees)")
@@ -366,8 +600,9 @@ class TurnpointPurgerUI(tk.Tk):
         global_watermark.place(relx=1.0, rely=1.0, anchor="se", x=-18, y=-10)
 
     def _build_client_layout(self, parent):
-        parent.columnconfigure(0, weight=3)
-        parent.columnconfigure(1, weight=2)
+        parent.rowconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=0, minsize=self._scaled_px(RIGHT_PANEL_BASE_MIN_WIDTH))
 
         visual_panel = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
         visual_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 24), pady=(10, 0))
@@ -670,8 +905,9 @@ class TurnpointPurgerUI(tk.Tk):
         email_label.pack(anchor="e", padx=20, pady=(0, 12))
 
     def _build_worker_layout(self, parent):
-        parent.columnconfigure(0, weight=3)
-        parent.columnconfigure(1, weight=2)
+        parent.rowconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=0, minsize=self._scaled_px(RIGHT_PANEL_BASE_MIN_WIDTH))
 
         visual_panel = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
         visual_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 24), pady=(10, 0))
@@ -914,8 +1150,9 @@ class TurnpointPurgerUI(tk.Tk):
         notes.pack(anchor="w", padx=20, pady=(8, 12))
 
     def _build_nexis_layout(self, parent):
-        parent.columnconfigure(0, weight=3)
-        parent.columnconfigure(1, weight=2)
+        parent.rowconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=0, minsize=self._scaled_px(RIGHT_PANEL_BASE_MIN_WIDTH))
 
         left = tk.Frame(parent, bg="#050b16", bd=0, relief="flat")
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 24), pady=(10, 0))
@@ -1181,20 +1418,22 @@ class TurnpointPurgerUI(tk.Tk):
         self.nexis_preview = preview
 
     def _build_service_rate_layout(self, parent):
-        parent.columnconfigure(0, weight=4)
-        parent.columnconfigure(1, weight=1)
-        parent.rowconfigure(3, weight=1)
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(
+            1, weight=0, minsize=self._scaled_px(INSPECTOR_BASE_MIN_WIDTH)
+        )
+        parent.rowconfigure(4, weight=1)
 
         # ---- HEADER ----
         header = tk.Frame(parent, bg="#050b16")
-        header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=24, pady=(20, 8))
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=PAD_X, pady=(20, 8))
 
         tk.Label(
             header,
             text="ServiceType \u2192 Rate Extractor",
             fg="#f5fbff",
             bg="#050b16",
-            font=("Orbitron", 24, "bold"),
+            font=HEADER_FONT,
         ).pack(anchor="w")
 
         tk.Label(
@@ -1374,7 +1613,7 @@ class TurnpointPurgerUI(tk.Tk):
             textvariable=self.rate_status_var,
             fg="#9fe3ff",
             bg="#050b16",
-            font=("Space Mono", 10),
+            font=BODY_FONT,
             wraplength=1020,
             justify="left",
         ).pack(anchor="w", pady=(10, 0))
@@ -1384,14 +1623,14 @@ class TurnpointPurgerUI(tk.Tk):
             text="Status",
             fg="#9fe3ff",
             bg="#050b16",
-            font=("Space Mono", 10, "bold"),
+            font=BODY_BOLD_FONT,
         ).pack(anchor="w", pady=(8, 4))
 
         status_view = scrolledtext.ScrolledText(
             header,
             height=6,
             wrap="word",
-            font=("JetBrains Mono", 10),
+            font=CODE_FONT,
             bg="#030611",
             fg="#c2f1ff",
             insertbackground="#1de5ff",
@@ -1409,28 +1648,56 @@ class TurnpointPurgerUI(tk.Tk):
             highlightbackground="#1f3e66",
             highlightcolor="#1f3e66",
         )
-        strip_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=24, pady=(10, 0))
+        strip_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=PAD_X, pady=(10, 0))
 
         self.rate_status_strip = tk.Label(
             strip_frame,
             text="RED: 0 | YELLOW: 0 | BLUE: 0 | Conflicts: 0 | Last: --:--:--",
             fg="#d8f1ff",
             bg="#0a1324",
-            font=("Space Mono", 10, "bold"),
+            font=BODY_BOLD_FONT,
             anchor="w",
         )
         self.rate_status_strip.pack(fill="x", padx=10, pady=6)
 
+        # ---- LEGEND ----
+        legend_frame = tk.Frame(
+            parent,
+            bg="#0a1324",
+            highlightthickness=1,
+            highlightbackground="#1f3e66",
+            highlightcolor="#1f3e66",
+        )
+        legend_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=PAD_X, pady=(10, 0))
+        tk.Label(
+            legend_frame,
+            text=self._rate_help_text(inline=True),
+            fg="#a8dcff",
+            bg="#0a1324",
+            font=("Space Mono", 9),
+            justify="left",
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True, padx=10, pady=6)
+        self.rate_help_button = ttk.Button(
+            legend_frame,
+            text="?",
+            style="Cyber.TButton",
+            command=self._show_rate_help_dialog,
+            width=3,
+        )
+        self.rate_help_button.pack(side="right", padx=(0, 8), pady=6)
+
         # ---- FILTERS ----
         filters = tk.Frame(parent, bg="#050b16")
-        filters.grid(row=2, column=0, columnspan=2, sticky="ew", padx=24, pady=(10, 6))
+        filters.grid(row=3, column=0, columnspan=2, sticky="ew", padx=PAD_X, pady=(10, 6))
+        filters.columnconfigure(8, weight=1)
 
         tk.Label(
             filters,
-            text="Service Group:",
+            text="Service Type:",
             fg="#9fe3ff",
             bg="#050b16",
-            font=("Space Mono", 10),
+            font=BODY_FONT,
         ).grid(row=0, column=0, sticky="w", padx=(0, 6))
 
         self.rate_group_combo = ttk.Combobox(
@@ -1438,7 +1705,7 @@ class TurnpointPurgerUI(tk.Tk):
             textvariable=self.rate_group_var,
             values=["All Groups"],
             state="readonly",
-            width=35,
+            width=36,
         )
         self.rate_group_combo.grid(row=0, column=1, sticky="w", padx=(0, 12))
         self.rate_group_combo.bind(
@@ -1450,13 +1717,13 @@ class TurnpointPurgerUI(tk.Tk):
             text="Search:",
             fg="#9fe3ff",
             bg="#050b16",
-            font=("Space Mono", 10),
+            font=BODY_FONT,
         ).grid(row=0, column=2, sticky="w", padx=(0, 6))
 
         search_entry = tk.Entry(
             filters,
             textvariable=self.rate_search_var,
-            width=28,
+            width=24,
             font=("JetBrains Mono", 11),
             bg="#0a1324",
             fg="#e9f2ff",
@@ -1475,6 +1742,14 @@ class TurnpointPurgerUI(tk.Tk):
         )
         self.rate_apply_button.grid(row=0, column=4, sticky="w")
 
+        self.rate_autofit_button = ttk.Button(
+            filters,
+            text="Auto-fit Columns",
+            style="Cyber.TButton",
+            command=self._handle_auto_fit_truth_columns,
+        )
+        self.rate_autofit_button.grid(row=0, column=5, sticky="w", padx=(8, 0))
+
         freeze_cb = tk.Checkbutton(
             filters,
             text="Freeze View",
@@ -1484,14 +1759,22 @@ class TurnpointPurgerUI(tk.Tk):
             selectcolor="#0a1324",
             activebackground="#050b16",
             activeforeground="#18e0ff",
-            font=("Space Mono", 10),
+            font=BODY_FONT,
             command=self._on_freeze_toggled,
         )
-        freeze_cb.grid(row=0, column=5, sticky="w", padx=(12, 0))
+        freeze_cb.grid(row=0, column=6, sticky="w", padx=(12, 0))
+
+        tk.Label(
+            filters,
+            textvariable=self.rate_variant_count_var,
+            fg="#9fe3ff",
+            bg="#050b16",
+            font=BODY_BOLD_FONT,
+        ).grid(row=0, column=7, sticky="w", padx=(16, 0))
 
         # ---- TRUTH GRID (left) + INSPECTOR (right) ----
         grid_frame = tk.Frame(parent, bg="#050b16")
-        grid_frame.grid(row=3, column=0, sticky="nsew", padx=(24, 8), pady=(0, 16))
+        grid_frame.grid(row=4, column=0, sticky="nsew", padx=(PAD_X, 8), pady=(0, 16))
         grid_frame.columnconfigure(0, weight=1)
         grid_frame.rowconfigure(0, weight=1)
 
@@ -1499,8 +1782,10 @@ class TurnpointPurgerUI(tk.Tk):
             grid_frame,
             headers=[
                 "Status",
+                "Parent Service Type",
+                "Variant Prefix",
                 "Service Variant",
-                "ID",
+                "Variant ID",
                 "Rate",
                 "Item Number",
                 "Rate Source",
@@ -1522,9 +1807,8 @@ class TurnpointPurgerUI(tk.Tk):
             "copy",
         )
         self.truth_grid.set_options(
-            # tksheet requires a 3-part tuple: (family, size, style).
             font=("JetBrains Mono", 10, "normal"),
-            header_font=("Space Mono", 10, "bold"),
+            header_font=BODY_BOLD_FONT,
             table_bg="#0a1324",
             table_fg="#e9f2ff",
             header_bg="#1f3e66",
@@ -1535,6 +1819,7 @@ class TurnpointPurgerUI(tk.Tk):
         )
         self.truth_grid.grid(row=0, column=0, sticky="nsew")
         self.truth_grid.extra_bindings("cell_select", self._on_truth_row_selected)
+        self._configure_truth_grid_columns()
 
         # ---- INSPECTOR PANEL (right column) ----
         inspector_frame = tk.Frame(
@@ -1544,7 +1829,7 @@ class TurnpointPurgerUI(tk.Tk):
             highlightbackground="#1f3e66",
             highlightcolor="#1f3e66",
         )
-        inspector_frame.grid(row=3, column=1, sticky="nsew", padx=(8, 24), pady=(0, 16))
+        inspector_frame.grid(row=4, column=1, sticky="nsew", padx=(8, PAD_X), pady=(0, 16))
         self.rate_inspector_frame = inspector_frame
 
         tk.Label(
@@ -3016,9 +3301,14 @@ class TurnpointPurgerUI(tk.Tk):
             self.rate_export_xlsx_button,
             self.rate_cleanup_button,
             self.rate_apply_button,
+            self.rate_autofit_button,
         ):
             if btn:
                 btn.configure(state="disabled" if blocked else "normal")
+        if self.rate_group_combo:
+            self.rate_group_combo.configure(state="disabled" if blocked else "readonly")
+        if self.rate_search_entry:
+            self.rate_search_entry.configure(state="disabled" if blocked else "normal")
 
     def _set_discovery_running(self, running):
         self.discovery_running = running
@@ -3318,12 +3608,62 @@ class TurnpointPurgerUI(tk.Tk):
             self.rate_pending_refresh = True
             self.rate_refresh_job_id = self.after(50, self._refresh_truth_grid)
 
-    def _refresh_truth_grid(self):
-        """Refresh the truth grid from the truth store."""
-        self.rate_pending_refresh = False
+    def _rate_help_text(self, inline: bool = False) -> str:
+        if inline:
+            return (
+                "BLUE: resolved (Rate + Item Number). "
+                "YELLOW: partially resolved. "
+                "RED: missing values. "
+                "Rate Source / Item Source = source chosen for each truth field. "
+                "Updated (UTC) = last truth refresh timestamp."
+            )
+        return (
+            "Legend:\n"
+            "- BLUE rows: both Rate and Item Number resolved.\n"
+            "- YELLOW rows: partially resolved (only one of Rate/Item Number).\n"
+            "- RED rows: unresolved or missing required values.\n\n"
+            "Columns:\n"
+            "- Rate Source: source currently selected for the truth Rate.\n"
+            "- Item Source: source currently selected for the truth Item Number.\n"
+            "- Updated (UTC): when that record was last resolved in UTC.\n"
+        )
+
+    def _show_rate_help_dialog(self):
+        messagebox.showinfo("Rate Extractor Help", self._rate_help_text(inline=False))
+
+    def _configure_truth_grid_columns(self):
         if not self.truth_grid:
             return
+        widths = [
+            self._scaled_px(88),   # Status
+            self._scaled_px(300),  # Parent Service Type
+            self._scaled_px(120),  # Variant Prefix
+            self._scaled_px(260),  # Service Variant
+            self._scaled_px(230),  # Variant ID
+            self._scaled_px(110),  # Rate
+            self._scaled_px(220),  # Item Number
+            self._scaled_px(120),  # Rate Source
+            self._scaled_px(120),  # Item Source
+            self._scaled_px(165),  # Updated (UTC)
+        ]
+        self.truth_grid.set_column_widths(column_widths=widths)
+        self.truth_grid.align_columns(columns=[5], align="e", redraw=False)
 
+    def _handle_auto_fit_truth_columns(self):
+        if not self.truth_grid:
+            return
+        widths = []
+        for col_idx in range(10):
+            auto_width = self.truth_grid.get_column_text_width(
+                col_idx, visible_only=True, only_if_too_small=False
+            )
+            min_width = self._scaled_px(80)
+            max_width = self._scaled_px(500)
+            widths.append(max(min_width, min(max_width, int(auto_width))))
+        self.truth_grid.set_column_widths(column_widths=widths)
+        self.truth_grid.align_columns(columns=[5], align="e", redraw=True)
+
+    def _get_filtered_truth_records(self):
         group = self.rate_group_var.get()
         if group == "All Groups":
             records = self.truth_store.get_all_records()
@@ -3334,22 +3674,42 @@ class TurnpointPurgerUI(tk.Tk):
         if search:
             filtered = []
             for rec in records:
-                text = f"{rec.service_variant_label} {rec.service_type_id} {rec.truth_rate} {rec.truth_item_number}".lower()
+                text = (
+                    f"{rec.parent_service_type} "
+                    f"{rec.service_variant_prefix} "
+                    f"{rec.service_variant_label} "
+                    f"{rec.service_type_id} {rec.truth_rate} {rec.truth_item_number}"
+                ).lower()
                 if search in text:
                     filtered.append(rec)
             records = filtered
 
-        # Sort by parent, then variant, then ID
-        records = sorted(
+        return sorted(
             records,
-            key=lambda r: (r.parent_service_type.lower(), r.service_variant_label.lower(), r.service_type_id),
+            key=lambda r: (
+                r.parent_service_type.lower(),
+                r.service_variant_prefix.lower(),
+                r.service_variant_label.lower(),
+                r.service_type_id,
+            ),
         )
+
+    def _refresh_truth_grid(self):
+        """Refresh the truth grid from the truth store."""
+        self.rate_pending_refresh = False
+        if not self.truth_grid:
+            return
+
+        records = self._get_filtered_truth_records()
+        self._visible_truth_records = records
 
         # Build grid data
         data = []
         for rec in records:
             row = [
                 rec.status.upper(),
+                rec.parent_service_type,
+                rec.service_variant_prefix,
                 rec.service_variant_label,
                 rec.service_type_id,
                 rec.truth_rate,
@@ -3361,6 +3721,7 @@ class TurnpointPurgerUI(tk.Tk):
             data.append(row)
 
         self.truth_grid.set_sheet_data(data)
+        self.truth_grid.dehighlight_all()
 
         # Apply row colors
         for idx, rec in enumerate(records):
@@ -3373,16 +3734,17 @@ class TurnpointPurgerUI(tk.Tk):
 
             # Per-cell conflict highlighting (mandatory)
             if rec.rate_conflict:
-                self.truth_grid.highlight_cells(row=idx, column=3, bg="#cc0000", fg="#ffffff")
+                self.truth_grid.highlight_cells(row=idx, column=5, bg="#cc0000", fg="#ffffff")
                 parts = [f"{src}: {c.value}" for src, c in rec.rate_candidates.items() if c.value]
-                self.truth_grid.note((idx, 3), note="CONFLICT\n" + " vs ".join(parts), readonly=True)
+                self.truth_grid.note((idx, 5), note="CONFLICT\n" + " vs ".join(parts), readonly=True)
             if rec.item_conflict:
-                self.truth_grid.highlight_cells(row=idx, column=4, bg="#cc0000", fg="#ffffff")
+                self.truth_grid.highlight_cells(row=idx, column=6, bg="#cc0000", fg="#ffffff")
                 parts = [f"{src}: {c.value}" for src, c in rec.item_candidates.items() if c.value]
-                self.truth_grid.note((idx, 4), note="CONFLICT\n" + " vs ".join(parts), readonly=True)
+                self.truth_grid.note((idx, 6), note="CONFLICT\n" + " vs ".join(parts), readonly=True)
 
         self._update_status_strip()
         self._refresh_group_selector()
+        self._update_rate_variant_count(records)
 
     def _update_status_strip(self):
         """Update the status strip with RED/YELLOW/BLUE counts."""
@@ -3397,9 +3759,19 @@ class TurnpointPurgerUI(tk.Tk):
         """Refresh the Service Group combobox with current parent groups."""
         if not self.rate_group_combo:
             return
+        selected = self.rate_group_var.get()
         groups = self.truth_store.get_parent_groups()
         all_groups = ["All Groups"] + groups
         self.rate_group_combo["values"] = all_groups
+        if selected not in all_groups:
+            self.rate_group_var.set("All Groups")
+
+    def _update_rate_variant_count(self, records):
+        group = self.rate_group_var.get()
+        if group == "All Groups":
+            self.rate_variant_count_var.set(f"{len(records)} variants shown")
+        else:
+            self.rate_variant_count_var.set(f"{len(records)} variants shown for '{group}'")
 
     def _on_freeze_toggled(self):
         """Handle Freeze View checkbox toggle."""
@@ -3416,31 +3788,48 @@ class TurnpointPurgerUI(tk.Tk):
             return
 
         row_idx = list(selected.rows)[0]
-        group = self.rate_group_var.get()
-        if group == "All Groups":
-            records = self.truth_store.get_all_records()
-        else:
-            records = self.truth_store.get_records_for_parent(group)
-
-        search = self.rate_search_var.get().strip().lower()
-        if search:
-            filtered = []
-            for rec in records:
-                text = f"{rec.service_variant_label} {rec.service_type_id} {rec.truth_rate} {rec.truth_item_number}".lower()
-                if search in text:
-                    filtered.append(rec)
-            records = filtered
-
-        records = sorted(
-            records,
-            key=lambda r: (r.parent_service_type.lower(), r.service_variant_label.lower(), r.service_type_id),
-        )
+        records = self._visible_truth_records
 
         if row_idx >= len(records):
             return
 
         rec = records[row_idx]
+        self._selected_truth_record = rec
         self._show_inspector(rec)
+
+    def _record_to_json_payload(self, rec):
+        return {
+            "status": rec.status,
+            "parent_service_type": rec.parent_service_type,
+            "service_variant_prefix": rec.service_variant_prefix,
+            "service_variant_label": rec.service_variant_label,
+            "service_variant_id": rec.service_type_id,
+            "rate": rec.truth_rate,
+            "item_number": rec.truth_item_number,
+            "rate_source": rec.truth_rate_source,
+            "item_source": rec.truth_item_source,
+            "updated_utc": rec.updated_utc,
+            "rate_conflict": rec.rate_conflict,
+            "item_conflict": rec.item_conflict,
+            "service_type_link": rec.service_type_link,
+            "rate_candidates": {
+                src: {"value": cand.value, "updated_utc": cand.updated_utc}
+                for src, cand in rec.rate_candidates.items()
+            },
+            "item_candidates": {
+                src: {"value": cand.value, "updated_utc": cand.updated_utc}
+                for src, cand in rec.item_candidates.items()
+            },
+        }
+
+    def _copy_to_clipboard(self, value: str):
+        self.clipboard_clear()
+        self.clipboard_append(str(value or ""))
+        self.update_idletasks()
+
+    def _copy_truth_row_json(self, rec):
+        payload = self._record_to_json_payload(rec)
+        self._copy_to_clipboard(json.dumps(payload, indent=2, ensure_ascii=False))
 
     def _show_inspector(self, rec):
         """Populate the inspector panel with truth record details."""
@@ -3450,10 +3839,31 @@ class TurnpointPurgerUI(tk.Tk):
         self.rate_inspector_text.config(state="normal")
         self.rate_inspector_text.delete("1.0", "end")
 
-        self.rate_inspector_text.insert("end", f"{rec.service_variant_label}\n", "heading")
-        self.rate_inspector_text.insert("end", f"Service Type ID: {rec.service_type_id}\n\n", "subheading")
+        title = rec.service_variant_label or "(Unlabeled Variant)"
+        self.rate_inspector_text.insert("end", f"{title}\n", "heading")
+        self.rate_inspector_text.insert(
+            "end",
+            f"Parent: {rec.parent_service_type or '(unknown)'} | Prefix: {rec.service_variant_prefix or '(n/a)'}\n",
+            "subheading",
+        )
+        self.rate_inspector_text.insert(
+            "end", f"Variant ID: {rec.service_type_id or '(missing)'}\n\n", "subheading"
+        )
 
-        self.rate_inspector_text.insert("end", "Rate Candidates:\n", "label")
+        self.rate_inspector_text.insert("end", "Status\n", "label")
+        self.rate_inspector_text.insert("end", f"  {rec.status.upper()}\n")
+        self.rate_inspector_text.insert("end", "Rate\n", "label")
+        self.rate_inspector_text.insert(
+            "end", f"  {rec.truth_rate or '(missing)'}  [{rec.truth_rate_source or 'n/a'}]\n"
+        )
+        self.rate_inspector_text.insert("end", "Item Number\n", "label")
+        self.rate_inspector_text.insert(
+            "end", f"  {rec.truth_item_number or '(missing)'}  [{rec.truth_item_source or 'n/a'}]\n"
+        )
+        self.rate_inspector_text.insert("end", "Updated (UTC)\n", "label")
+        self.rate_inspector_text.insert("end", f"  {rec.updated_utc or '(unknown)'}\n")
+
+        self.rate_inspector_text.insert("end", "\nRate Candidates:\n", "label")
         if rec.rate_candidates:
             for src, cand in rec.rate_candidates.items():
                 self.rate_inspector_text.insert("end", f"  {src}: {cand.value} (updated: {cand.updated_utc})\n")
@@ -3487,11 +3897,47 @@ class TurnpointPurgerUI(tk.Tk):
             self._inspector_link_frame.destroy()
             self._inspector_link_frame = None
 
-        if rec.service_type_link:
-            link_url = rec.service_type_link
-            btn_frame = tk.Frame(self.rate_inspector_frame, bg="#0a1324")
-            btn_frame.pack(fill="x", padx=10, pady=(0, 10))
+        link_url = rec.service_type_link
+        btn_frame = tk.Frame(self.rate_inspector_frame, bg="#0a1324")
+        btn_frame.pack(fill="x", padx=10, pady=(0, 10))
 
+        tk.Button(
+            btn_frame,
+            text="Copy Rate",
+            font=("Space Mono", 9),
+            bg="#1f3e66",
+            fg="#d8f1ff",
+            activebackground="#2a5080",
+            activeforeground="#ffffff",
+            relief="flat",
+            command=lambda v=rec.truth_rate: self._copy_to_clipboard(v),
+        ).pack(side="left", padx=(0, 6))
+
+        tk.Button(
+            btn_frame,
+            text="Copy Item Number",
+            font=("Space Mono", 9),
+            bg="#1f3e66",
+            fg="#d8f1ff",
+            activebackground="#2a5080",
+            activeforeground="#ffffff",
+            relief="flat",
+            command=lambda v=rec.truth_item_number: self._copy_to_clipboard(v),
+        ).pack(side="left", padx=(0, 6))
+
+        tk.Button(
+            btn_frame,
+            text="Copy Row JSON",
+            font=("Space Mono", 9),
+            bg="#1f3e66",
+            fg="#d8f1ff",
+            activebackground="#2a5080",
+            activeforeground="#ffffff",
+            relief="flat",
+            command=lambda r=rec: self._copy_truth_row_json(r),
+        ).pack(side="left", padx=(0, 6))
+
+        if link_url:
             tk.Button(
                 btn_frame,
                 text="Copy Link",
@@ -3501,7 +3947,7 @@ class TurnpointPurgerUI(tk.Tk):
                 activebackground="#2a5080",
                 activeforeground="#ffffff",
                 relief="flat",
-                command=lambda u=link_url: (self.clipboard_clear(), self.clipboard_append(u)),
+                command=lambda u=link_url: self._copy_to_clipboard(u),
             ).pack(side="left", padx=(0, 6))
 
             tk.Button(
@@ -3516,7 +3962,7 @@ class TurnpointPurgerUI(tk.Tk):
                 command=lambda u=link_url: webbrowser.open(u),
             ).pack(side="left")
 
-            self._inspector_link_frame = btn_frame
+        self._inspector_link_frame = btn_frame
 
     def _truth_store_ingest(self, source, row):
         """Thread-safe ingestion into truth store. Called from on_row callbacks."""
@@ -3549,25 +3995,7 @@ class TurnpointPurgerUI(tk.Tk):
         if self.rate_running or self.discovery_running:
             return
 
-        group = self.rate_group_var.get()
-        if group == "All Groups":
-            records = self.truth_store.get_all_records()
-        else:
-            records = self.truth_store.get_records_for_parent(group)
-
-        search = self.rate_search_var.get().strip().lower()
-        if search:
-            filtered = []
-            for rec in records:
-                text = f"{rec.service_variant_label} {rec.service_type_id} {rec.truth_rate} {rec.truth_item_number}".lower()
-                if search in text:
-                    filtered.append(rec)
-            records = filtered
-
-        records = sorted(
-            records,
-            key=lambda r: (r.parent_service_type.lower(), r.service_variant_label.lower(), r.service_type_id),
-        )
+        records = self._get_filtered_truth_records()
 
         if not records:
             messagebox.showinfo("ServiceType → Rate Extractor", "No rows to export.")
@@ -3579,6 +4007,7 @@ class TurnpointPurgerUI(tk.Tk):
 
         fieldnames = [
             "Parent Service Type",
+            "Service Variant Prefix",
             "Service Variant Label",
             "Service Type ID",
             "Status",
@@ -3597,6 +4026,7 @@ class TurnpointPurgerUI(tk.Tk):
             for rec in records:
                 writer.writerow({
                     "Parent Service Type": rec.parent_service_type,
+                    "Service Variant Prefix": rec.service_variant_prefix,
                     "Service Variant Label": rec.service_variant_label,
                     "Service Type ID": rec.service_type_id,
                     "Status": rec.status.upper(),
@@ -3618,25 +4048,7 @@ class TurnpointPurgerUI(tk.Tk):
         if self.rate_running or self.discovery_running:
             return
 
-        group = self.rate_group_var.get()
-        if group == "All Groups":
-            records = self.truth_store.get_all_records()
-        else:
-            records = self.truth_store.get_records_for_parent(group)
-
-        search = self.rate_search_var.get().strip().lower()
-        if search:
-            filtered = []
-            for rec in records:
-                text = f"{rec.service_variant_label} {rec.service_type_id} {rec.truth_rate} {rec.truth_item_number}".lower()
-                if search in text:
-                    filtered.append(rec)
-            records = filtered
-
-        records = sorted(
-            records,
-            key=lambda r: (r.parent_service_type.lower(), r.service_variant_label.lower(), r.service_type_id),
-        )
+        records = self._get_filtered_truth_records()
 
         if not records:
             messagebox.showinfo("ServiceType → Rate Extractor", "No rows to export.")
@@ -3657,6 +4069,7 @@ class TurnpointPurgerUI(tk.Tk):
         sheet.title = "TruthView"
         sheet.append([
             "Parent Service Type",
+            "Service Variant Prefix",
             "Service Variant Label",
             "Service Type ID",
             "Status",
@@ -3671,6 +4084,7 @@ class TurnpointPurgerUI(tk.Tk):
         for rec in records:
             sheet.append([
                 rec.parent_service_type,
+                rec.service_variant_prefix,
                 rec.service_variant_label,
                 rec.service_type_id,
                 rec.status.upper(),
@@ -3885,7 +4299,7 @@ class TurnpointPurgerUI(tk.Tk):
                 for raw in reader:
                     if detected_format == "discovery":
                         # Discovery format - feed into truth store as discovery source
-                        if raw.get("Service Type ID"):
+                        if raw.get("Service Variant ID") or raw.get("Service Type ID"):
                             imported_rows.append(dict(raw))
                     else:
                         # Reference format - normalize and feed as reference source

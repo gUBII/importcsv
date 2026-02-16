@@ -992,6 +992,8 @@ def test_variant_column_schema():
         "Parent Service Type Label",
         "Parent Service Type",
         "Service Type ID",
+        "Service Variant ID",
+        "Service Variant Prefix",
         "Service Variant Label",
         "Rate",
         "Rate (Raw)",
@@ -1016,6 +1018,7 @@ def test_build_variant_record_includes_truthview_alias_fields():
         service_type_id="7358",
         service_type_label="(SIL) Active Night-Time",
         variant={
+            "Service Variant Prefix": "eve",
             "Service Variant Label": "Weekday Evening",
             "Rate": "78.81",
             "Rate (Raw)": "78.81",
@@ -1028,6 +1031,8 @@ def test_build_variant_record_includes_truthview_alias_fields():
     )
     assert row["Parent Service Type"] == row["Parent Service Type Label"]
     assert row["Service Type ID"] == row["Parent Service Type ID"]
+    assert row["Service Variant Prefix"] == "eve"
+    assert row["Service Variant ID"] == "7358::eve"
     assert row["Item Number"] == row["Code"]
 
 

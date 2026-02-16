@@ -57,6 +57,8 @@ VARIANT_COLUMNS = [
     "Parent Service Type Label",
     "Parent Service Type",
     "Service Type ID",
+    "Service Variant ID",
+    "Service Variant Prefix",
     "Service Variant Label",
     "Rate",
     "Rate (Raw)",
@@ -139,6 +141,9 @@ VARIANT_LABEL_FALLBACK = {
     "saturday": "Saturday",
     "sunday": "Sunday",
     "ph": "Public Holiday",
+}
+VARIANT_LABEL_TO_PREFIX = {
+    label.lower(): prefix for prefix, label in VARIANT_LABEL_FALLBACK.items()
 }
 
 MODAL_DISMISS_BUTTON_XPATH = (
@@ -1314,6 +1319,7 @@ def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[D
 
         rows.append(
             {
+                "Service Variant Prefix": prefix,
                 "Service Variant Label": label,
                 "Rate": _coerce_rate_text(rate_raw),
                 "Rate (Raw)": rate_raw,
@@ -1322,7 +1328,6 @@ def _extract_variant_table_rows(driver, recorder: DiagnosticsRecorder) -> List[D
                 "Unit": row["unit"],
                 "Status": row_status,
                 "Error Reason": row_error,
-                "_prefix": prefix,
             }
         )
 
@@ -1924,6 +1929,14 @@ def _build_variant_record(
     probe_client_id: str,
     source_url: str,
 ) -> Dict[str, str]:
+    variant_prefix = _normalize_text(
+        variant.get("Service Variant Prefix", "") or variant.get("_prefix", "")
+    ).lower()
+    if not variant_prefix:
+        variant_label = _normalize_text(variant.get("Service Variant Label", "")).lower()
+        variant_prefix = VARIANT_LABEL_TO_PREFIX.get(variant_label, "")
+    variant_id = f"{service_type_id}::{variant_prefix}" if variant_prefix else service_type_id
+
     code_value = variant.get("Code", "")
     status_value = _normalize_text(variant.get("Status", "PASS")).upper() or "PASS"
     error_value = _normalize_text(variant.get("Error Reason", ""))
@@ -1932,6 +1945,8 @@ def _build_variant_record(
         "Parent Service Type Label": service_type_label,
         "Parent Service Type": service_type_label,
         "Service Type ID": service_type_id,
+        "Service Variant ID": variant_id,
+        "Service Variant Prefix": variant_prefix,
         "Service Variant Label": variant.get("Service Variant Label", ""),
         "Rate": variant.get("Rate", ""),
         "Rate (Raw)": variant.get("Rate (Raw)", ""),
@@ -1964,6 +1979,8 @@ def _build_failure_record(
         "Parent Service Type Label": service_type_label,
         "Parent Service Type": service_type_label,
         "Service Type ID": service_type_id,
+        "Service Variant ID": "",
+        "Service Variant Prefix": "",
         "Service Variant Label": "",
         "Rate": "",
         "Rate (Raw)": "",
@@ -2003,7 +2020,12 @@ def _detect_conflicts(variants: List[Dict[str, str]]) -> Tuple[List[Dict], List[
             v["Conflict Detail"] = ""
             clean_rows.append(v)
             continue
-        key = (v.get("Parent Service Type ID", ""), v.get("Service Variant Label", ""))
+        key = (
+            v.get("Parent Service Type ID", ""),
+            v.get("Service Variant ID", "")
+            or v.get("Service Variant Prefix", "")
+            or v.get("Service Variant Label", ""),
+        )
         if key not in by_key:
             by_key[key] = []
         by_key[key].append(v)

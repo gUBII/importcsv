@@ -1,9 +1,9 @@
 """
 In-memory Truth Store for Service Type rate / item-number resolution.
 
-Keyed by Service Type ID. Tracks candidate values by source,
-resolves truth fields via precedence, detects per-field conflicts,
-and computes row-level status (red / yellow / blue).
+Records are keyed by `service_type_id`. Discovery rows can provide
+`Service Variant ID` (e.g. `7358::day`) so each variant is stored as
+its own record instead of being collapsed.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ class TruthCandidate:
 class TruthRecord:
     service_type_id: str
     parent_service_type: str = ""
+    service_variant_prefix: str = ""
     service_variant_label: str = ""
 
     # Candidates per field per source
@@ -191,7 +192,13 @@ class TruthStore:
 
     def upsert_discovery(self, row: dict) -> None:
         """Ingest a discovery row from Appointment Item Discovery."""
-        sid = _normalize(str(row.get("Service Type ID", "") or ""))
+        sid = _normalize(
+            str(
+                row.get("Service Variant ID", "")
+                or row.get("Service Type ID", "")
+                or ""
+            )
+        )
         if not sid:
             return
 
@@ -199,10 +206,19 @@ class TruthStore:
         now = _utc_now()
 
         # Labels
-        parent = _normalize(str(row.get("Parent Service Type", "") or ""))
+        parent = _normalize(
+            str(
+                row.get("Parent Service Type", "")
+                or row.get("Parent Service Type Label", "")
+                or ""
+            )
+        )
+        variant_prefix = _normalize(str(row.get("Service Variant Prefix", "") or "")).lower()
         variant = _normalize(str(row.get("Service Variant Label", "") or ""))
         if parent:
             rec.parent_service_type = parent
+        if variant_prefix:
+            rec.service_variant_prefix = variant_prefix
         if variant:
             rec.service_variant_label = variant
 

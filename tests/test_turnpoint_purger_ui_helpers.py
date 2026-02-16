@@ -43,6 +43,25 @@ def test_truth_store_upsert_discovery():
     assert rec.status == "blue"
 
 
+def test_truth_store_upsert_discovery_prefers_service_variant_id():
+    store = TruthStore()
+    store.upsert_discovery({
+        "Service Type ID": "7358",
+        "Service Variant ID": "7358::day",
+        "Service Variant Prefix": "day",
+        "Parent Service Type": "Assistance",
+        "Service Variant Label": "Weekday Day",
+        "Rate": "149.57",
+        "Item Number": "01_404_0104_1_1",
+    })
+    rec = store.get_record("7358::day")
+    assert rec is not None
+    assert rec.service_type_id == "7358::day"
+    assert rec.service_variant_prefix == "day"
+    assert rec.parent_service_type == "Assistance"
+    assert rec.service_variant_label == "Weekday Day"
+
+
 def test_truth_store_conflict_detection():
     store = TruthStore()
     store.upsert_reference({
