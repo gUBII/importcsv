@@ -1,6 +1,6 @@
 # Directory Tree Snapshot
 source: /Users/moofasa/PurgedClients
-generated_utc: 2026-02-16T13:08:01.388121+00:00
+generated_utc: 2026-02-17T01:43:17.231010+00:00
 max_depth: 3
 max_entries_per_dir: 200
 
