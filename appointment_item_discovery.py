@@ -7,7 +7,7 @@ Extracts variant-level data from Assist appointments form:
 - Checkpointing for resumable extraction
 - Conflict detection across probe clients
 
-Output: ~/LineItemRates/ServiceTypeTruth/variants/{latest,snapshots}/
+Output: <TURNPOINT_BASE_ROOT>/LineItemRates/ServiceTypeTruth/variants/{latest,snapshots}/
 """
 
 import csv
@@ -2144,7 +2144,7 @@ def extract_service_type_variants(
         if not reference_service_types and not allow_missing_reference_index:
             missing_msg = (
                 "REFERENCE_INDEX_MISSING — run capture_service_type_rates first "
-                "to generate ~/LineItemRates/ServiceTypeTruth/reference/latest/ServiceTypes_latest.csv"
+                f"to generate {line_item_paths.reference_latest_csv()}"
             )
             recorder.checker(
                 "service_type_index",

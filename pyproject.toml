@@ -33,6 +33,7 @@ py-modules = [
     "worker_purger",
     "worker_state",
     "nexis_uploader",
+    "storage_paths",
     "line_item_paths",
     "truth_store",
 ]

@@ -1,5 +1,4 @@
 import csv
-import os
 import re
 import shutil
 import time
@@ -26,15 +25,14 @@ from worker_state import (
     get_worker_last_purge,
     reset_worker_state,
 )
+import storage_paths
 
 BASE_URL = "https://tp1.com.au/"
 CARERS_PAGE_URL = f"{BASE_URL.rstrip('/')}/carers.asp?posted=yes&fld57=False"
-ARCHIVE_ROOT = Path(
-    os.getenv("PURGED_WORKER_ROOT", str(Path.home() / "PurgedWorker"))
-).expanduser().resolve()
-DOWNLOADS_DIR = ARCHIVE_ROOT / "_downloads"
-LATEST_WORKER_EXCEL = ARCHIVE_ROOT / "latest_workers.xlsx"
-WORKER_MANIFEST_PATH = ARCHIVE_ROOT / "worker_manifest.csv"
+ARCHIVE_ROOT = storage_paths.purged_worker_root()
+DOWNLOADS_DIR = storage_paths.worker_downloads_dir()
+LATEST_WORKER_EXCEL = storage_paths.latest_worker_excel_path()
+WORKER_MANIFEST_PATH = storage_paths.worker_manifest_path()
 DEFAULT_RECORD_LIMIT = 10000
 
 WORKER_UNIVERSAL_ID = None
@@ -45,6 +43,20 @@ DOCUMENTS_DIR = None
 LOG_SINK = None
 OPERATOR_NAME = None
 DOWNLOAD_TIMEOUT = 60
+_STORAGE_READY = False
+
+
+def ensure_worker_storage_ready():
+    """Initialize routed storage and run one-time migration when needed."""
+    global _STORAGE_READY
+    if _STORAGE_READY:
+        return
+    storage_paths.ensure_storage_structure()
+    try:
+        storage_paths.auto_migrate_legacy_outputs()
+    except Exception as exc:
+        log_message(f"Storage migration warning: {exc}")
+    _STORAGE_READY = True
 
 
 def sanitize_component(value, fallback="Worker"):
@@ -62,6 +74,7 @@ def _format_folder_name(worker_id, worker_name):
 
 
 def ensure_worker_root():
+    ensure_worker_storage_ready()
     ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
     return ARCHIVE_ROOT
@@ -310,6 +323,7 @@ def _write_worker_manifest(entries: Iterable[Dict[str, str]], manifest_path: Pat
 
 
 def collect_workers(headless=False, limit=DEFAULT_RECORD_LIMIT, manifest_path=None):
+    ensure_worker_storage_ready()
     target_manifest = manifest_path or WORKER_MANIFEST_PATH
     driver = build_chrome_driver(headless=headless, download_dir=DOWNLOADS_DIR)
     entries: List[Dict[str, str]] = []
@@ -375,6 +389,7 @@ def _trigger_excel_download(driver):
 
 
 def download_worker_excel(headless=False, limit=DEFAULT_RECORD_LIMIT):
+    ensure_worker_storage_ready()
     ensure_worker_root()
     driver = build_chrome_driver(headless=headless, download_dir=DOWNLOADS_DIR)
     try:
@@ -690,6 +705,7 @@ def run_worker_purge(worker_id, worker_name=None, worker_team=None, headless=Fal
     Execute the extraction flow for a worker ID.
     Duplicate workers are skipped without override.
     """
+    ensure_worker_storage_ready()
     guard_against_duplicate(worker_id)
     universal_slot, purged_so_far = reserve_worker_sequence()
     assign_worker_sequence(universal_slot)
@@ -753,6 +769,7 @@ def run_worker_purge(worker_id, worker_name=None, worker_team=None, headless=Fal
 
 def reset_worker_data():
     """Delete the PurgedWorker archive and reset worker counters."""
+    ensure_worker_storage_ready()
     errors = []
     try:
         if ARCHIVE_ROOT.exists():

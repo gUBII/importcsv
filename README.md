@@ -24,7 +24,7 @@ TurnpointPurger (c) (Far)H4n_SOLO is a cinematic Selenium toolkit that logs into
   TP_USERNAME=...
   TP_PASSWORD=...
   PURGER_CONTACT_EMAIL=you@example.com   # optional, shown inside the GUI
-  PURGED_ARCHIVE_ROOT=~/PurgedClients    # optional, overrides where archives are saved
+  TURNPOINT_BASE_ROOT=~/LOCALDB_TurnpointPG   # optional, base for all runtime outputs
   ```
 - Optional: set `TP_OPERATOR` to prefill the operator codename used in logs/UI.
 
@@ -78,7 +78,7 @@ turnpoint-budgeter       # standalone budget export helper
 - Client Discovery controls (Find Purgeable Clients + Bundle Download actions) stay hidden until valid credentials are configured, preventing accidental bundle jobs with empty credentials.
 - Buttons reuse the existing logging/status system so you get toast + log updates as the purgeable dataset or bundles are generated.
 - A **Client Atlas** panel loads `PDCC/package_manifest.csv`, shows every client (order, ID, name, package) in a tree view, and color-codes rows: yellow for pending, red for already-purged IDs. Use the **Collect Package Manifest** button to crawl all packages from `clients.asp` and regenerate the manifest, then hit **Refresh Client Atlas** to reload or recolor the table.
-- The NexisUploader tab converts `PurgedWorker` folders into Nexis-ready payloads, generates combined worker CSV/JSON files for engineers, batches worker detail exports into `CLEANEDFORNEXIS`, and exports/upgrades the official `FormatforClient(Nexis)/clients-data.csv` file from the per-client archives. Live preview panels show the JSON payload that will be uploaded to Nexis.
+- The NexisUploader tab converts `PurgedWorker` folders into Nexis-ready payloads, generates combined worker CSV/JSON files for engineers, batches worker detail exports into `PurgedWorker/CLEANEDFORNEXIS`, and exports/upgrades `PurgedClients/FormatforClient(Nexis)/clients-data.csv` from the per-client archives. Live preview panels show the JSON payload that will be uploaded to Nexis.
 - Bundle download buttons now open a package picker: select “All Packages” or click individual package buttons to queue bundle exports sequentially. Each run logs per-package outcomes and reuses the purgeable Excel snapshot saved under PDCC.
 - Added a **Purge All Clients** workflow that reads every client ID from the manifest, purges sequentially, and enforces a configurable cooldown (enter the delay in seconds, minimum 20) to avoid TurnPoint 403 lockouts. A red “Override cooldown / Force next client” button lets you skip the wait mid-cycle, and the cooldown progress bar counts down every pause.
 - Bundle + manifest actions now surface operational metadata: an indeterminate progress bar spins while bundles are downloading, and timestamp labels (“Bundle last run…”, “Manifest updated…”) let ops teams see when each dataset was last refreshed.
@@ -98,10 +98,10 @@ turnpoint-budgeter       # standalone budget export helper
 - Batch runs respect the duplicate guard—clients with an existing purge history are skipped unless `--force-duplicate` is set.
 
 ### Purgeable Client Discovery & PDCC Bundles
-- Use `python importcsv.py --find-purgeable` (or the new **Find Purgeable Clients** button in the UI) to log in, force the record limit to 10,000, apply the purgeable filter, and download the Excel dataset of every purgeable client. The workbook is stored at `Purged Client/Package Divided Client Credential (PDCC)/latest_purgeable_clients.xlsx`.
+- Use `python importcsv.py --find-purgeable` (or the new **Find Purgeable Clients** button in the UI) to log in, force the record limit to 10,000, apply the purgeable filter, and download the Excel dataset of every purgeable client. The workbook is stored at `PurgedClients/Package Divided Client Credential (PDCC)/latest_purgeable_clients.xlsx`.
 - Generate package exports via `python importcsv.py --bundle-download` or the **Bundle Download** button; each package detected in the workbook gets its own folder containing both `.xlsx` and `.csv` lists:
   ```
-  Purged Client/
+  PurgedClients/
     Package Divided Client Credential (PDCC)/
       NDIS - NDIA Managed/
         NDIS_-_NDIA_Managed_clients.xlsx
@@ -111,7 +111,7 @@ turnpoint-budgeter       # standalone budget export helper
 - Restrict the bundle to specific packages with `--bundle-package "HCP L1" --bundle-package "SaH Level 4"`; add `--update-bundle` (or use the **Update package bundle to latest** button—visible once credentials are configured) to re-download the dataset and replace every package export.
 - Bundle runs reuse the latest purgeable workbook when present and only re-download when `--update-bundle` is supplied.
 - Set `PURGEABLE_CLIENTS_URL` (and optionally `PDCC_ROOT`) in `.env` if your TurnPoint tenant exposes the purgeable list at a different path or you prefer a custom export root. For one-off runs, pass `--purgeable-url https://tp1.com.au/custom-client-list.asp` to override without editing the environment.
-- Need a turnkey manifest of every client per package? Run `python importcsv.py --collect-packages` (optionally combine with `--package "NDIS - Plan Managed"` to limit the crawl). The crawler logs in, iterates each package filter on `clients.asp`, and writes `Package Divided Client Credential (PDCC)/package_manifest.csv` with ordered rows (`order, package, client id, client name, details url`). The manifest will feed the upcoming UI tables.
+- Need a turnkey manifest of every client per package? Run `python importcsv.py --collect-packages` (optionally combine with `--package "NDIS - Plan Managed"` to limit the crawl). The crawler logs in, iterates each package filter on `clients.asp`, and writes `PurgedClients/Package Divided Client Credential (PDCC)/package_manifest.csv` with ordered rows (`order, package, client id, client name, details url`). The manifest will feed the upcoming UI tables.
 - For an even deeper dive (architecture, workflow, UML), refer to `docs/TurnpointPurger_Notes.md`.
 
 ## Windows Build Steps
@@ -127,9 +127,9 @@ turnpoint-budgeter       # standalone budget export helper
 9. Zip the `dist\windows\TurnpointPurger*` folders and ship them with instructions to drop a `.env` (TP credentials + optional overrides) beside the EXE.
 
 ## Packaging Notes
-- All output folders live under `~/PurgedClients/` (override via `PURGED_ARCHIVE_ROOT`) with sequential NexisIDs to avoid collisions.
+- All output folders now route under `~/LOCALDB_TurnpointPG/` (override via `TURNPOINT_BASE_ROOT`) with three domains: `PurgedClients`, `PurgedWorker`, and `LineItemRates`.
 - Duplicate client IDs are detected; the tool emits a `_duplicate_reports/<client>.csv` ledger showing the last purge timestamp before allowing a rerun.
-- Persistent stats (`~/.turnpoint_purger/purger_state.json`) drive the UI summary table and CLI logs.
+- Persistent stats are stored at `LineItemRates/_state/purger_state.json` and `LineItemRates/_state/worker_state.json`.
 - The build helper writes intermediates to `build/` and final binaries into `dist/<platform>/`. Clean them up between releases with `python Declutter.py` (or inspect first with `python Declutter.py --dry-run`).
 
 Refer to `PACKAGING.md` for deeper build/customization steps.

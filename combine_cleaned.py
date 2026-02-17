@@ -6,7 +6,7 @@ Usage:
     python combine_cleaned.py [--root /path/to/CLEANEDFORNEXIS] [--out combined.csv]
 
 Defaults:
-    root: ~/CLEANEDFORNEXIS
+    root: ~/LOCALDB_TurnpointPG/PurgedWorker/CLEANEDFORNEXIS
     out:  combined_workers.csv (alongside the root)
 """
 
@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, Dict
 
 from nexis_uploader import discover_workers, build_nexis_employee
+import storage_paths
 
 
 def discover_csvs(root: Path) -> List[Path]:
@@ -84,8 +85,17 @@ def combine(root: Path, out_csv: Path, out_json: Path) -> None:
 
 
 def main() -> None:
+    storage_paths.ensure_storage_structure()
+    try:
+        storage_paths.auto_migrate_legacy_outputs()
+    except Exception:
+        pass
     parser = argparse.ArgumentParser(description="Combine CLEANEDFORNEXIS CSVs into one CSV and JSON.")
-    parser.add_argument("--root", default=str(Path.home() / "CLEANEDFORNEXIS"), help="Path to CLEANEDFORNEXIS folder.")
+    parser.add_argument(
+        "--root",
+        default=str(storage_paths.cleaned_nexis_root()),
+        help="Path to CLEANEDFORNEXIS folder.",
+    )
     parser.add_argument("--out", default="combined_workers.csv", help="Output CSV filename (JSON will match stem).")
     args = parser.parse_args()
 

@@ -56,6 +56,7 @@ from appointment_item_discovery import (
     run_service_type_merge,
 )
 import line_item_paths
+import storage_paths
 from truth_store import TruthStore
 from tksheet import Sheet
 
@@ -89,6 +90,11 @@ ASCII_SIGNATURE = (
 class TurnpointPurgerUI(tk.Tk):
     def __init__(self):
         super().__init__()
+        try:
+            storage_paths.ensure_storage_structure()
+            storage_paths.auto_migrate_legacy_outputs()
+        except Exception:
+            pass
         self.title("TurnpointPurger // Purging Control Surface")
         self.ui_scale = 1.0
         self.ui_scale_mode = "auto"
@@ -159,17 +165,15 @@ class TurnpointPurgerUI(tk.Tk):
         )
 
         # Nexis uploader state
-        self.nexis_root_var = tk.StringVar(value=str(Path.home() / "PurgedWorker"))
+        self.nexis_root_var = tk.StringVar(value=str(storage_paths.purged_worker_root()))
         self.nexis_table = None
         self.nexis_preview = None
         self.nexis_count_var = tk.StringVar(value="No workers scanned yet.")
         self.nexis_user_var = tk.StringVar(value=os.getenv("NEXIS_USERNAME", ""))
         self.nexis_pass_var = tk.StringVar(value=os.getenv("NEXIS_PASSWORD", ""))
-        self.cleaned_root_var = tk.StringVar(value=str(Path.home() / "CLEANEDFORNEXIS"))
-        self.clients_root_var = tk.StringVar(value=str(Path.home() / "PurgedClients"))
-        self.clients_out_var = tk.StringVar(
-            value=str(Path(__file__).resolve().parent / "FormatforClient(Nexis)" / "clients-data.csv")
-        )
+        self.cleaned_root_var = tk.StringVar(value=str(storage_paths.cleaned_nexis_root()))
+        self.clients_root_var = tk.StringVar(value=str(storage_paths.purged_clients_root()))
+        self.clients_out_var = tk.StringVar(value=str(storage_paths.clients_export_path()))
 
         # ServiceType -> Rate Extractor state (Truth Table)
         self.rate_status_var = tk.StringVar(
@@ -1440,7 +1444,7 @@ class TurnpointPurgerUI(tk.Tk):
             header,
             text=(
                 "Truth Table: real-time conflict detection + multi-source rate resolution. "
-                "Outputs: ~/LineItemRates/ServiceTypeTruth/"
+                f"Outputs: {line_item_paths.get_truth_root()}/"
             ),
             fg="#7cc3ff",
             bg="#050b16",

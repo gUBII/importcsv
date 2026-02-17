@@ -53,6 +53,21 @@ def test_get_root_default():
     assert root.is_absolute()
 
 
+def test_get_root_derives_from_turnpoint_base(monkeypatch, tmp_path):
+    """When base root is set, LineItemRates resolves under it."""
+    base = (tmp_path / "LOCALDB_TurnpointPG").resolve()
+    monkeypatch.delenv("LINE_ITEM_RATES_ROOT", raising=False)
+    monkeypatch.setenv("TURNPOINT_BASE_ROOT", str(base))
+    assert line_item_paths.get_root() == base / "LineItemRates"
+
+
+def test_get_root_honors_line_item_override(monkeypatch, tmp_path):
+    """LINE_ITEM_RATES_ROOT override remains highest-priority for this root."""
+    custom = (tmp_path / "custom_line_items").resolve()
+    monkeypatch.setenv("LINE_ITEM_RATES_ROOT", str(custom))
+    assert line_item_paths.get_root() == custom
+
+
 # ---------------------------------------------------------------------------
 # Reference paths
 # ---------------------------------------------------------------------------

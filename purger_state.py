@@ -1,13 +1,20 @@
 import json
 import threading
-from pathlib import Path
+
+import storage_paths
 
 DEFAULT_START_ID = 100001
-STATE_DIR = Path.home() / ".turnpoint_purger"
-STATE_FILE = STATE_DIR / "purger_state.json"
 HISTORY_LIMIT = 200
 
 _state_lock = threading.Lock()
+
+
+def _state_dir():
+    return storage_paths.state_dir()
+
+
+def _state_file():
+    return storage_paths.purger_state_file()
 
 
 def _default_state():
@@ -37,10 +44,11 @@ def _coerce_state(raw):
 
 
 def _read_state():
-    if not STATE_FILE.exists():
+    state_file = _state_file()
+    if not state_file.exists():
         return _default_state()
     try:
-        with STATE_FILE.open("r", encoding="utf-8") as fh:
+        with state_file.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
     except Exception:
         return _default_state()
@@ -48,11 +56,13 @@ def _read_state():
 
 
 def _write_state(state):
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp_path = STATE_FILE.with_suffix(".tmp")
+    state_dir = _state_dir()
+    state_file = _state_file()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = state_file.with_suffix(".tmp")
     with tmp_path.open("w", encoding="utf-8") as fh:
         json.dump(state, fh, indent=2)
-    tmp_path.replace(STATE_FILE)
+    tmp_path.replace(state_file)
 
 
 def get_purge_statistics():
@@ -135,6 +145,7 @@ def record_purge_event(
 
 def reset_state():
     """Delete the persisted purge state file (used by reset command)."""
+    state_file = _state_file()
     with _state_lock:
-        if STATE_FILE.exists():
-            STATE_FILE.unlink()
+        if state_file.exists():
+            state_file.unlink()

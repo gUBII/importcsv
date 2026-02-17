@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,17 +19,15 @@ DOCS_ROOT = REPO_ROOT / "docs" / "directories"
 IMPORTCSV_DOC_ROOT = DOCS_ROOT / "importcsv"
 MOOFASA_DOC_ROOT = DOCS_ROOT / "moofasa"
 
-MOOFASA_TARGETS = [
-    "CLEANEDFORNEXIS",
-    "db_backup_local_20260210",
-    "LineItemRates",
-    "PurgedClients",
-    "PurgedWorker",
-]
-
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _base_root() -> Path:
+    return Path(
+        os.getenv("TURNPOINT_BASE_ROOT", str(Path.home() / "LOCALDB_TurnpointPG"))
+    ).expanduser().resolve()
 
 
 def _iter_tree_lines(root: Path, *, max_depth: int, max_entries_per_dir: int) -> list[str]:
@@ -158,10 +157,16 @@ def main() -> None:
         max_entries_per_dir=max_entries,
     )
 
-    home_root = Path.home()
-    for folder_name in MOOFASA_TARGETS:
-        source = home_root / folder_name
-        output = MOOFASA_DOC_ROOT / f"{folder_name}.tree.txt"
+    base_root = _base_root()
+    targets = [
+        ("LOCALDB_TurnpointPG", base_root),
+        ("PurgedClients", base_root / "PurgedClients"),
+        ("PurgedWorker", base_root / "PurgedWorker"),
+        ("PurgedWorker_CLEANEDFORNEXIS", base_root / "PurgedWorker" / "CLEANEDFORNEXIS"),
+        ("LineItemRates", base_root / "LineItemRates"),
+    ]
+    for snapshot_name, source in targets:
+        output = MOOFASA_DOC_ROOT / f"{snapshot_name}.tree.txt"
         _write_snapshot(
             output,
             source,
@@ -172,4 +177,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

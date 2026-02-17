@@ -2,30 +2,27 @@
 LineItemRates path builder — single source of truth for all
 service-type discovery / rate output paths.
 
-Default root:  ~/LineItemRates
+Default root:  ~/LOCALDB_TurnpointPG/LineItemRates
 Override:      LINE_ITEM_RATES_ROOT=/custom/path
 """
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+import storage_paths
 
 # ---------------------------------------------------------------------------
 # Root
 # ---------------------------------------------------------------------------
-
-_ROOT = Path(
-    os.getenv("LINE_ITEM_RATES_ROOT", str(Path.home() / "LineItemRates"))
-).expanduser().resolve()
 
 _TRUTH = "ServiceTypeTruth"
 
 
 def get_root() -> Path:
     """Return the resolved LineItemRates root directory."""
-    return _ROOT
+    return storage_paths.line_item_root()
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +30,7 @@ def get_root() -> Path:
 # ---------------------------------------------------------------------------
 
 def _cat(*parts: str) -> Path:
-    return _ROOT / _TRUTH / Path(*parts)
+    return get_root() / _TRUTH / Path(*parts)
 
 
 def reference_latest_dir() -> Path:
@@ -116,6 +113,7 @@ _ALL_DIRS = (
 
 def ensure_structure() -> None:
     """Create the full LineItemRates directory tree if it doesn't exist."""
+    storage_paths.ensure_storage_structure()
     for factory in _ALL_DIRS:
         factory().mkdir(parents=True, exist_ok=True)
 
@@ -217,7 +215,7 @@ def get_variant_paths(run_id: str) -> dict[str, Path]:
 
 def get_truth_root() -> Path:
     """Return the ServiceTypeTruth root directory."""
-    return _ROOT / _TRUTH
+    return get_root() / _TRUTH
 
 
 # --- well-known latest paths (for cross-module imports) ---

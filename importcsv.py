@@ -20,6 +20,7 @@ from purger_state import (
     get_client_last_purge,
     reset_state,
 )
+import storage_paths
 
 # Load credentials from .env file
 load_dotenv()
@@ -32,26 +33,17 @@ CLIENT_ID = "56851"
 CLIENT_NAME = "KHAIR Adam"
 APP_VERSION = "2.0.2"
 CLIENTS_PAGE_URL = f"{BASE_URL.rstrip('/')}/clients.asp?posted=yes"
-ARCHIVE_ROOT = Path(
-    os.getenv("PURGED_ARCHIVE_ROOT", str(Path.home() / "PurgedClients"))
-).expanduser().resolve()
-DUPLICATE_REPORTS_DIR = ARCHIVE_ROOT / "_duplicate_reports"
-PDCC_ROOT = Path(
-    os.getenv(
-        "PDCC_ROOT",
-        str(
-            (ARCHIVE_ROOT.parent / "Purged Client" / "Package Divided Client Credential (PDCC)")
-        ),
-    )
-).expanduser().resolve()
-PDCC_DOWNLOADS_DIR = PDCC_ROOT / "_downloads"
-LATEST_PURGEABLE_EXCEL = PDCC_ROOT / "latest_purgeable_clients.xlsx"
+ARCHIVE_ROOT = storage_paths.purged_clients_root()
+DUPLICATE_REPORTS_DIR = storage_paths.duplicate_reports_dir()
+PDCC_ROOT = storage_paths.pdcc_root()
+PDCC_DOWNLOADS_DIR = storage_paths.pdcc_downloads_dir()
+LATEST_PURGEABLE_EXCEL = storage_paths.latest_purgeable_excel_path()
 DEFAULT_PURGEABLE_CLIENTS_URL = (
     f"{BASE_URL.rstrip('/')}/clients.asp?posted=yes&fld253=&fld897=&fld256=&fld256_to=&"
     "fld258=&fld823=&fld260=&fld912=&fld913=&fld735=&fld569=&fld568=&fld470=&fld264=True&psize=10000&ob=&sbmt=yes"
 )
 PURGEABLE_CLIENTS_URL = os.getenv("PURGEABLE_CLIENTS_URL")
-PACKAGE_MANIFEST_PATH = PDCC_ROOT / "package_manifest.csv"
+PACKAGE_MANIFEST_PATH = storage_paths.package_manifest_path()
 PACKAGE_FALLBACK_NAMES = [
     "Admin",
     "HCP L1",
@@ -91,6 +83,20 @@ FINAL_OUTPUT_DIR = None
 DOWNLOAD_TIMEOUT = 60  # seconds
 LOG_SINK = None
 DEFAULT_MANIFEST_PATH = Path(__file__).resolve().parent / "client_manifest.csv"
+_STORAGE_READY = False
+
+
+def ensure_storage_ready():
+    """Initialize routed storage and run one-time legacy migration if needed."""
+    global _STORAGE_READY
+    if _STORAGE_READY:
+        return
+    storage_paths.ensure_storage_structure()
+    try:
+        storage_paths.auto_migrate_legacy_outputs()
+    except Exception as exc:
+        log_message(f"Storage migration warning: {exc}")
+    _STORAGE_READY = True
 
 
 def set_log_sink(callback):
@@ -128,6 +134,7 @@ class DuplicateClientError(Exception):
 
 def ensure_pdcc_root():
     """Ensure the PDCC directory tree exists (used by package exports)."""
+    ensure_storage_ready()
     PDCC_ROOT.mkdir(parents=True, exist_ok=True)
     PDCC_DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
     return PDCC_ROOT
@@ -392,6 +399,7 @@ def assign_universal_sequence(universal_id):
 
 
 def ensure_archive_root():
+    ensure_storage_ready()
     ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
     DUPLICATE_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1566,6 +1574,7 @@ def parse_cli_args():
 
 
 def main():
+    ensure_storage_ready()
     args = parse_cli_args()
     packages = parse_package_args(args.packages)
     bundle_packages = parse_package_args(args.bundle_packages)
