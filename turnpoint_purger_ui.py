@@ -353,7 +353,7 @@ class TurnpointPurgerUI(tk.Tk):
                 )
             except Exception:
                 pass
-        if self.truth_grid:
+        if getattr(self, "truth_grid", None):
             self._configure_truth_grid_columns()
         if self._styles_initialized:
             self._setup_styles()
