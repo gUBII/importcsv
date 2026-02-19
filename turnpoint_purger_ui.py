@@ -3397,6 +3397,23 @@ class TurnpointPurgerUI(tk.Tk):
                 f"Unable to open output folder:\n{exc}",
             )
 
+    def _latest_variant_diagnostics_dir(self) -> str:
+        """Return the most recently modified variant diagnostics run folder."""
+        base = line_item_paths.variants_diagnostics_dir()
+        if not base.exists():
+            return ""
+        latest = None
+        for child in base.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                mtime = child.stat().st_mtime
+            except Exception:
+                continue
+            if latest is None or mtime > latest[0]:
+                latest = (mtime, child)
+        return str(latest[1]) if latest else ""
+
     def _handle_run_appointment_discovery(self):
         if self.discovery_running:
             return
@@ -3495,17 +3512,27 @@ class TurnpointPurgerUI(tk.Tk):
             except Exception as exc:
                 error = f"Service Type variant extraction failed: {exc}"
                 self._enqueue_log(self._timestamp(f"[ServiceTypeVariants] {error}"))
+                diag_folder = self.discovery_last_diagnostics_folder or self._latest_variant_diagnostics_dir()
+                if diag_folder:
+                    self.discovery_last_diagnostics_folder = diag_folder
+                    self._enqueue_log(
+                        self._timestamp(
+                            f"[ServiceTypeVariants] Diagnostics folder: {diag_folder}"
+                        )
+                    )
                 self.after(
                     0,
                     lambda: self.rate_status_var.set(
-                        "Service Type variant extraction failed. Inspect logs for details."
+                        "Service Type variant extraction failed. Full details saved in diagnostics."
                     ),
                 )
                 self.after(
                     0,
-                    lambda err=str(exc): messagebox.showerror(
+                    lambda: messagebox.showerror(
                         "ServiceType → Rate Extractor",
-                        f"Service Type variant extraction failed:\n{err}",
+                        "Variant extraction failed.\n\n"
+                        "Full details were saved in diagnostics.\n"
+                        "Use 'Open Diagnostics Folder'.",
                     ),
                 )
             finally:

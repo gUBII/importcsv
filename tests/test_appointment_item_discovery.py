@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 import pytest
+from selenium.common.exceptions import StaleElementReferenceException
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -210,6 +211,88 @@ def test_sanitize_excel_text():
     cleaned, removed_count = discovery._sanitize_excel_text(text_with_illegal)
     assert removed_count == 2
     assert "\x00" not in cleaned
+
+
+def test_retry_on_stale_retries_and_succeeds(tmp_path):
+    """_retry_on_stale retries stale failures up to the configured limit."""
+    recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
+    attempts = {"count": 0}
+
+    def flaky():
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise StaleElementReferenceException("stale")
+        return "ok"
+
+    result = discovery._retry_on_stale(
+        "unit_retry",
+        flaky,
+        retries=3,
+        delay_s=0.0,
+        recorder=recorder,
+    )
+    assert result == "ok"
+    assert attempts["count"] == 3
+    codes = [e["code"] for e in recorder.events]
+    assert "STALE_RETRY_ATTEMPT" in codes
+    assert "STALE_RETRY_EXHAUSTED" not in codes
+
+
+def test_retry_on_stale_does_not_retry_non_stale(tmp_path):
+    """_retry_on_stale should not swallow/retry non-stale exceptions."""
+    recorder = discovery.DiagnosticsRecorder("test_run", tmp_path)
+    attempts = {"count": 0}
+
+    def boom():
+        attempts["count"] += 1
+        raise ValueError("bad")
+
+    with pytest.raises(ValueError):
+        discovery._retry_on_stale(
+            "unit_non_stale",
+            boom,
+            retries=3,
+            delay_s=0.0,
+            recorder=recorder,
+        )
+    assert attempts["count"] == 1
+
+
+def test_click_matching_service_option_recovers_from_stale(monkeypatch):
+    """Selection fallback re-queries options after stale reads."""
+
+    class _FlakyOption:
+        def __init__(self):
+            self.calls = 0
+
+        @property
+        def text(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise StaleElementReferenceException("stale text")
+            return "Target Label"
+
+    class _Driver:
+        def __init__(self):
+            self.find_calls = 0
+            self.option = _FlakyOption()
+
+        def find_elements(self, by, value):
+            self.find_calls += 1
+            return [self.option]
+
+    driver = _Driver()
+    monkeypatch.setattr(discovery, "_wait_for_listbox_open", lambda _d, timeout=0: True)
+    monkeypatch.setattr(discovery, "_safe_click", lambda *args, **kwargs: True)
+
+    clicked = discovery._click_matching_service_option(
+        driver,
+        "Target Label",
+        allow_contains=False,
+        recorder=None,
+    )
+    assert clicked is True
+    assert driver.find_calls >= 2
 
 
 # =============================================================================

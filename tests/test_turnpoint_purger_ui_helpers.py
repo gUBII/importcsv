@@ -108,3 +108,10 @@ def test_truth_store_status_counts():
     assert counts["red"] == 1
     assert counts["yellow"] == 1
     assert counts["blue"] == 1
+
+
+def test_discovery_error_dialog_message_is_concise():
+    """UI should show short discovery failure dialogs (not raw stack dumps)."""
+    source = (ROOT / "turnpoint_purger_ui.py").read_text(encoding="utf-8")
+    assert "Full details were saved in diagnostics." in source
+    assert "Use 'Open Diagnostics Folder'." in source

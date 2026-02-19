@@ -21,7 +21,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-from selenium.common.exceptions import ElementClickInterceptedException
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    StaleElementReferenceException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -248,6 +251,61 @@ def _sanitize_excel_text(value) -> Tuple[str, int]:
     text = str(value)
     cleaned = EXCEL_ILLEGAL_CHAR_RE.sub("", text)
     return cleaned, len(text) - len(cleaned)
+
+
+def _retry_on_stale(
+    action_name: str,
+    fn: Callable[[], Any],
+    *,
+    retries: int = 3,
+    delay_s: float = 0.15,
+    recorder: Optional["DiagnosticsRecorder"] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """
+    Retry a short operation when Selenium raises StaleElementReferenceException.
+    """
+    last_exc: Optional[Exception] = None
+    attempts = max(1, int(retries))
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except StaleElementReferenceException as exc:
+            last_exc = exc
+            if recorder:
+                recorder.event(
+                    "WARN",
+                    "stale_retry",
+                    "STALE_RETRY_ATTEMPT",
+                    f"{action_name} stale on attempt {attempt}/{attempts}",
+                    context={
+                        "action": action_name,
+                        "attempt": attempt,
+                        "retries": attempts,
+                        "error": _normalize_text(str(exc)),
+                        **(context or {}),
+                    },
+                )
+            if attempt < attempts:
+                time.sleep(float(delay_s) * attempt)
+                continue
+            break
+    if recorder:
+        recorder.event(
+            "ERROR",
+            "stale_retry",
+            "STALE_RETRY_EXHAUSTED",
+            f"{action_name} stale retries exhausted after {attempts} attempts",
+            context={
+                "action": action_name,
+                "retries": attempts,
+                "error": _normalize_text(str(last_exc or "")),
+                **(context or {}),
+            },
+        )
+    if last_exc:
+        raise last_exc
+    return fn()
 
 
 # =============================================================================
@@ -930,30 +988,20 @@ def _click_matching_service_option(
     recorder: Optional[DiagnosticsRecorder] = None,
 ) -> bool:
     """Click a matching option in div[role='listbox'] list."""
-    try:
-        options = driver.find_elements(By.XPATH, SERVICE_TYPE_OPTION_XPATH)
-    except Exception:
-        options = []
-    if not options:
-        return False
-
     target = _normalize_text(expected_label).lower()
-    for option in options:
-        text = _normalize_text(getattr(option, "text", ""))
-        if text.lower() == target:
-            return _safe_click(
-                driver,
-                option,
-                recorder=recorder,
-                step="select_option_click",
-                code="SERVICE_TYPE_OPTION_CLICK",
-                selector=SERVICE_TYPE_OPTION_XPATH,
-            )
 
-    if allow_contains and target:
+    def _attempt() -> bool:
+        _wait_for_listbox_open(driver, timeout=2.0)
+        try:
+            options = driver.find_elements(By.XPATH, SERVICE_TYPE_OPTION_XPATH)
+        except Exception:
+            options = []
+        if not options:
+            return False
+
         for option in options:
             text = _normalize_text(getattr(option, "text", ""))
-            if target in text.lower():
+            if text.lower() == target:
                 return _safe_click(
                     driver,
                     option,
@@ -963,7 +1011,30 @@ def _click_matching_service_option(
                     selector=SERVICE_TYPE_OPTION_XPATH,
                 )
 
-    return False
+        if allow_contains and target:
+            for option in options:
+                text = _normalize_text(getattr(option, "text", ""))
+                if target in text.lower():
+                    return _safe_click(
+                        driver,
+                        option,
+                        recorder=recorder,
+                        step="select_option_click",
+                        code="SERVICE_TYPE_OPTION_CLICK",
+                        selector=SERVICE_TYPE_OPTION_XPATH,
+                    )
+        return False
+
+    return bool(
+        _retry_on_stale(
+            "click_matching_service_option",
+            _attempt,
+            retries=3,
+            delay_s=0.15,
+            recorder=recorder,
+            context={"expected_label": expected_label},
+        )
+    )
 
 
 def _select_service_type_option(
@@ -993,7 +1064,14 @@ def _select_service_type_option(
     except Exception:
         pass
     if _wait_for_combobox_closed(input_el, timeout=4.0):
-        selected = _read_selected_service_type_label(driver)
+        selected = _retry_on_stale(
+            "read_selected_service_type_label_enter",
+            lambda: _read_selected_service_type_label(driver),
+            retries=3,
+            delay_s=0.15,
+            recorder=recorder,
+            context={"expected_label": expected},
+        )
         if _labels_match(expected, selected):
             return True
         recorder.event(
@@ -1006,21 +1084,41 @@ def _select_service_type_option(
     # Fallback: click matching visible option text.
     _clear_and_type(driver, input_el, query_text, recorder=recorder)
     if _wait_for_listbox_open(driver, timeout=4.0):
-        clicked = _click_matching_service_option(
-            driver,
-            expected,
-            allow_contains=False,
-            recorder=recorder,
-        )
-        if not clicked and allow_contains:
+        def _fallback_click_sequence() -> bool:
             clicked = _click_matching_service_option(
                 driver,
                 expected,
-                allow_contains=True,
+                allow_contains=False,
                 recorder=recorder,
             )
+            if not clicked and allow_contains:
+                clicked = _click_matching_service_option(
+                    driver,
+                    expected,
+                    allow_contains=True,
+                    recorder=recorder,
+                )
+            return bool(clicked)
+
+        clicked = bool(
+            _retry_on_stale(
+                "fallback_option_click_sequence",
+                _fallback_click_sequence,
+                retries=3,
+                delay_s=0.15,
+                recorder=recorder,
+                context={"expected_label": expected, "query": query_text},
+            )
+        )
         if clicked and _wait_for_combobox_closed(input_el, timeout=4.0):
-            selected = _read_selected_service_type_label(driver)
+            selected = _retry_on_stale(
+                "read_selected_service_type_label_fallback",
+                lambda: _read_selected_service_type_label(driver),
+                retries=3,
+                delay_s=0.15,
+                recorder=recorder,
+                context={"expected_label": expected},
+            )
             if _labels_match(expected, selected):
                 return True
             recorder.event(
@@ -1093,8 +1191,24 @@ def _variant_pairs_by_prefix(driver) -> List[Tuple[str, Optional[Any], Optional[
 
 def _read_variant_fingerprint(driver) -> Tuple[Tuple[str, str, str], ...]:
     """Fingerprint selected label + available variant values to detect stale selections."""
-    fp: List[Tuple[str, str, str]] = [("__selected_label__", _read_selected_service_type_label(driver), "")]
-    for prefix, rate_el, code_el in _variant_pairs_by_prefix(driver):
+    selected = _retry_on_stale(
+        "read_variant_fingerprint_selected_label",
+        lambda: _read_selected_service_type_label(driver),
+        retries=3,
+        delay_s=0.12,
+        recorder=None,
+        context=None,
+    )
+    pairs = _retry_on_stale(
+        "read_variant_fingerprint_pairs",
+        lambda: _variant_pairs_by_prefix(driver),
+        retries=3,
+        delay_s=0.12,
+        recorder=None,
+        context=None,
+    )
+    fp: List[Tuple[str, str, str]] = [("__selected_label__", selected, "")]
+    for prefix, rate_el, code_el in pairs:
         rate_val = _normalize_text(rate_el.get_attribute("value")) if rate_el else ""
         code_val = _normalize_text(code_el.get_attribute("value")) if code_el else ""
         fp.append((prefix, rate_val, code_val))
@@ -1114,7 +1228,15 @@ def _wait_for_fingerprint_change(
         if after != before:
             time.sleep(0.35)
             return True
-        if expected_label and _labels_match(expected_label, _read_selected_service_type_label(driver)):
+        selected = _retry_on_stale(
+            "wait_fingerprint_read_selected_label",
+            lambda: _read_selected_service_type_label(driver),
+            retries=3,
+            delay_s=0.1,
+            recorder=None,
+            context=None,
+        )
+        if expected_label and _labels_match(expected_label, selected):
             time.sleep(0.35)
             return True
         time.sleep(0.15)
@@ -1125,7 +1247,17 @@ def _wait_for_variant_values_ready(driver, timeout: float = 2.5) -> bool:
     """Wait until discovered variant pairs have populated values."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        pairs = _variant_pairs_by_prefix(driver)
+        try:
+            pairs = _retry_on_stale(
+                "wait_variant_values_ready_pairs",
+                lambda: _variant_pairs_by_prefix(driver),
+                retries=3,
+                delay_s=0.1,
+                recorder=None,
+                context=None,
+            )
+        except Exception:
+            pairs = []
         if pairs:
             all_ready = True
             for _prefix, rate_el, code_el in pairs:
@@ -1674,12 +1806,25 @@ def _select_assist_option_with_retries(
     for attempt in range(max_retries):
         for strategy_name, query, allow_contains in strategies:
             try:
-                success = _select_service_type_option(
-                    driver,
-                    query,
-                    full_label,
-                    recorder,
-                    allow_contains=allow_contains,
+                success = bool(
+                    _retry_on_stale(
+                        "select_service_type_option_strategy",
+                        lambda q=query, allow=allow_contains: _select_service_type_option(
+                            driver,
+                            q,
+                            full_label,
+                            recorder,
+                            allow_contains=allow,
+                        ),
+                        retries=3,
+                        delay_s=0.15,
+                        recorder=recorder,
+                        context={
+                            "attempt": attempt + 1,
+                            "strategy": strategy_name,
+                            "target_label": full_label,
+                        },
+                    )
                 )
                 if success:
                     recorder.event(
@@ -1691,11 +1836,12 @@ def _select_assist_option_with_retries(
                     )
                     return True
             except Exception as exc:
+                stale_exhausted = isinstance(exc, StaleElementReferenceException)
                 recorder.event(
                     "WARN",
                     "select_option",
                     "SELECT_STRATEGY_FAILED",
-                    str(exc),
+                    f"{exc}{' (stale retries exhausted)' if stale_exhausted else ''}",
                     context={"attempt": attempt + 1, "strategy": strategy_name},
                 )
                 continue
@@ -2309,7 +2455,14 @@ def extract_service_type_variants(
                         _update_checkpoint(run_id, checkpoint)
                         continue
 
-                    selected_label = _read_selected_service_type_label(driver)
+                    selected_label = _retry_on_stale(
+                        "read_selected_service_type_label_post_select",
+                        lambda: _read_selected_service_type_label(driver),
+                        retries=3,
+                        delay_s=0.15,
+                        recorder=recorder,
+                        context={"service_type": st_label, "probe_client_id": probe_id},
+                    )
                     if not _labels_match(st_label, selected_label):
                         reason = (
                             "Service Type selection mismatch: "
@@ -2376,7 +2529,14 @@ def extract_service_type_variants(
                             url=_normalize_text(getattr(driver, "current_url", "")),
                         )
 
-                    variants = _extract_variant_table_rows(driver, recorder)
+                    variants = _retry_on_stale(
+                        "extract_variant_table_rows",
+                        lambda: _extract_variant_table_rows(driver, recorder),
+                        retries=3,
+                        delay_s=0.15,
+                        recorder=recorder,
+                        context={"service_type": st_label, "probe_client_id": probe_id},
+                    )
                     if not variants:
                         reason = "NO_VARIANTS_GRID: no variant input pairs found after verified Service Type selection."
                         recorder.checker(
@@ -2469,7 +2629,13 @@ def extract_service_type_variants(
                         service_has_hard_failure = True
                     _emit(f"  → extracted {len(variants)} variants (probe {probe_id})", on_progress)
                 except Exception as e:
-                    reason = f"Exception during Service Type extraction: {e}"
+                    stale_note = (
+                        " (stale retries exhausted)"
+                        if isinstance(e, StaleElementReferenceException)
+                        else ""
+                    )
+                    reason = f"Exception during Service Type extraction: {e}{stale_note}"
+                    stack = traceback.format_exc()
                     screenshot, html = _capture_assist_failure_artifacts(
                         driver,
                         recorder,
@@ -2482,7 +2648,11 @@ def extract_service_type_variants(
                         "EXCEPTION",
                         reason,
                         client_id=probe_id,
-                        context={"service_type": st_label},
+                        context={
+                            "service_type": st_label,
+                            "probe_client_id": probe_id,
+                            "traceback": stack,
+                        },
                     )
                     recorder.checker(
                         "extract_service_type",
