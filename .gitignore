@@ -18,3 +18,5 @@ dist/
 
 # Local upload/temp artifacts (not source)
 .tmp.driveupload/
+errors/
+node_modules/
